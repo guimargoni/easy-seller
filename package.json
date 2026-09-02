@@ -1,0 +1,24 @@
+{
+  "name": "easy-seller",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "workspaces": ["apps/api", "apps/extension", "apps/worker", "packages/*"],
+  "scripts": {
+    "dev": "concurrently -n WEB,API -c cyan,green \"npm run dev:web\" \"npm run dev:api\"",
+    "dev:web": "npm --prefix apps/web run dev",
+    "dev:api": "npm --workspace @easy-seller/api run dev",
+    "dev:extension": "npm --workspace @easy-seller/extension run dev",
+    "build": "npm run build:packages && npm run build:api && npm run build:extension && npm run build:web",
+    "build:packages": "npm --workspace @easy-seller/calculations run build",
+    "build:api": "npm --workspace @easy-seller/api run build",
+    "build:extension": "npm --workspace @easy-seller/extension run build",
+    "build:web": "npm --prefix apps/web run build",
+    "test": "npm --workspace @easy-seller/calculations test"
+  },
+  "devDependencies": {
+    "concurrently": "^9.2.1",
+    "typescript": "^5.9.3",
+    "vitest": "^3.2.4"
+  }
+}

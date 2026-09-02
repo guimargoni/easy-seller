@@ -1,0 +1,10 @@
+{
+  "manifest_version":3,
+  "name":"Easy Seller — Decisão Amazon",
+  "version":"0.1.0",
+  "description":"Analise margem, ROI, giro e risco em páginas da Amazon Brasil.",
+  "permissions":["storage"],
+  "host_permissions":["https://www.amazon.com.br/*","http://localhost:3333/*"],
+  "background":{"service_worker":"background.js","type":"module"},
+  "content_scripts":[{"matches":["https://www.amazon.com.br/*"],"js":["content.js"],"css":["content.css"],"run_at":"document_idle"}]
+}

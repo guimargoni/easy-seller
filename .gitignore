@@ -1,0 +1,9 @@
+node_modules/
+dist/
+.vinext/
+.env
+*.log
+apps/web/node_modules/
+apps/web/dist/
+apps/web/.vinext/
+apps/extension/.vite/

@@ -1,0 +1,297 @@
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+enum OpportunityStatus {
+  TEST
+  APPROVED
+  DISCARDED
+  WATCHING
+}
+
+enum RiskLevel {
+  LOW
+  MEDIUM
+  HIGH
+}
+
+enum CatalogSourceType {
+  PDF_UPLOAD
+  EXTERNAL_URL
+  QR_CODE
+  CSV
+  XLSX
+  MANUAL
+}
+
+enum ImportStatus {
+  UPLOADED
+  PROCESSING
+  NEEDS_REVIEW
+  COMPLETED
+  FAILED
+}
+
+enum MatchStatus {
+  AUTO_CONFIRMED
+  NEEDS_REVIEW
+  CONFIRMED
+  REJECTED
+}
+
+enum DataOrigin {
+  REAL
+  ESTIMATED
+  INFERRED
+}
+
+model User {
+  id String @id @default(cuid())
+  email String @unique
+  name String?
+  products Product[]
+  suppliers Supplier[]
+  decisions DecisionLog[]
+  alerts Alert[]
+  createdAt DateTime @default(now())
+}
+
+model Product {
+  id String @id @default(cuid())
+  userId String
+  user User @relation(fields: [userId], references: [id])
+  name String
+  brand String?
+  ean String?
+  category String?
+  imageUrl String?
+  listings AmazonListing[]
+  supplierProducts SupplierProduct[]
+  opportunities Opportunity[]
+  decisions DecisionLog[]
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+  @@index([userId, name])
+}
+
+model AmazonListing {
+  id String @id @default(cuid())
+  productId String
+  product Product @relation(fields: [productId], references: [id])
+  asin String
+  url String?
+  origin DataOrigin @default(INFERRED)
+  priceSnapshots PriceSnapshot[]
+  rankSnapshots RankSnapshot[]
+  competitionSnapshots CompetitionSnapshot[]
+  @@unique([productId, asin])
+  @@index([asin])
+}
+
+model Supplier {
+  id String @id @default(cuid())
+  userId String
+  user User @relation(fields: [userId], references: [id])
+  name String
+  legalName String?
+  cnpj String?
+  contact String?
+  phone String?
+  email String?
+  website String?
+  city String?
+  state String?
+  segment String?
+  issuesInvoice Boolean @default(false)
+  minimumOrderCents Int?
+  leadTimeDays Int?
+  paymentTerms String?
+  shippingNotes String?
+  notes String?
+  lastContactAt DateTime?
+  products SupplierProduct[]
+  catalogs Catalog[]
+  @@index([userId, name])
+}
+
+model SupplierProduct {
+  id String @id @default(cuid())
+  supplierId String
+  supplier Supplier @relation(fields: [supplierId], references: [id])
+  productId String?
+  product Product? @relation(fields: [productId], references: [id])
+  supplierSku String?
+  costCents Int
+  stock Int?
+  minimumQty Int?
+  priceHistory SupplierProductPrice[]
+  updatedAt DateTime @updatedAt
+  @@index([supplierId, supplierSku])
+}
+
+model PriceSnapshot {
+  id String @id @default(cuid())
+  listingId String
+  listing AmazonListing @relation(fields: [listingId], references: [id])
+  priceCents Int
+  buyBoxPriceCents Int?
+  shippingCents Int?
+  timestamp DateTime @default(now())
+  @@index([listingId, timestamp])
+}
+
+model RankSnapshot {
+  id String @id @default(cuid())
+  listingId String
+  listing AmazonListing @relation(fields: [listingId], references: [id])
+  salesRank Int
+  subcategoryRank Int?
+  timestamp DateTime @default(now())
+  @@index([listingId, timestamp])
+}
+
+model CompetitionSnapshot {
+  id String @id @default(cuid())
+  listingId String
+  listing AmazonListing @relation(fields: [listingId], references: [id])
+  sellerCount Int
+  fbaSellerCount Int?
+  amazonIsSeller Boolean
+  timestamp DateTime @default(now())
+  @@index([listingId, timestamp])
+}
+
+model Opportunity {
+  id String @id @default(cuid())
+  productId String
+  product Product @relation(fields: [productId], references: [id])
+  score Int
+  marginBasisPoints Int
+  roiBasisPoints Int
+  estimatedMonthlySales Int
+  estimatedDaysToSell Int?
+  recommendedQty Int
+  maxPurchasePriceCents Int
+  riskLevel RiskLevel
+  modelVersion String
+  calculatedAt DateTime @default(now())
+  @@index([productId, calculatedAt])
+}
+
+model Catalog {
+  id String @id @default(cuid())
+  supplierId String
+  supplier Supplier @relation(fields: [supplierId], references: [id])
+  name String
+  sourceType CatalogSourceType
+  sourceFile String?
+  sourceUrl String?
+  catalogDate DateTime?
+  importedAt DateTime @default(now())
+  status ImportStatus
+  totalPages Int?
+  totalDetectedProducts Int @default(0)
+  totalValidatedProducts Int @default(0)
+  version Int
+  imports CatalogImport[]
+  products CatalogProduct[]
+  supplierPrices SupplierProductPrice[]
+  @@unique([supplierId, version])
+}
+
+model CatalogImport {
+  id String @id @default(cuid())
+  catalogId String
+  catalog Catalog @relation(fields: [catalogId], references: [id])
+  status ImportStatus
+  progressPercent Int @default(0)
+  currentPage Int?
+  totalPages Int?
+  startedAt DateTime?
+  finishedAt DateTime?
+  error String?
+}
+
+model CatalogProduct {
+  id String @id @default(cuid())
+  catalogId String
+  catalog Catalog @relation(fields: [catalogId], references: [id])
+  supplierSku String?
+  ean String?
+  gtin String?
+  rawName String?
+  normalizedName String?
+  brand String?
+  model String?
+  variant String?
+  color String?
+  voltage String?
+  unitPriceCents Int?
+  unitsPerBox Int?
+  minimumBoxes Int?
+  minimumUnits Int?
+  minimumInvestmentCents Int?
+  availability String?
+  pageNumber Int?
+  imageUrl String?
+  imageCropData Json?
+  rawText String?
+  fieldConfidence Json?
+  extractionConfidence Float
+  status String
+  matches ProductMatch[]
+  @@index([catalogId, supplierSku])
+  @@index([ean])
+}
+
+model ProductMatch {
+  id String @id @default(cuid())
+  catalogProductId String
+  catalogProduct CatalogProduct @relation(fields: [catalogProductId], references: [id])
+  amazonAsin String
+  matchScore Float
+  matchMethod String
+  status MatchStatus
+}
+
+model SupplierProductPrice {
+  id String @id @default(cuid())
+  supplierProductId String
+  supplierProduct SupplierProduct @relation(fields: [supplierProductId], references: [id])
+  priceCents Int
+  unitsPerBox Int?
+  minimumQty Int?
+  catalogId String?
+  catalog Catalog? @relation(fields: [catalogId], references: [id])
+  validFrom DateTime?
+  observedAt DateTime @default(now())
+  @@index([supplierProductId, observedAt])
+}
+
+model DecisionLog {
+  id String @id @default(cuid())
+  userId String
+  user User @relation(fields: [userId], references: [id])
+  productId String
+  product Product @relation(fields: [productId], references: [id])
+  decision String
+  context Json
+  createdAt DateTime @default(now())
+}
+
+model Alert {
+  id String @id @default(cuid())
+  userId String
+  user User @relation(fields: [userId], references: [id])
+  type String
+  severity String
+  title String
+  message String
+  readAt DateTime?
+  createdAt DateTime @default(now())
+}
