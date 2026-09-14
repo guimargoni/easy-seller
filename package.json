@@ -3,22 +3,36 @@
   "version": "0.1.0",
   "private": true,
   "type": "module",
-  "workspaces": ["apps/api", "apps/extension", "apps/worker", "packages/*"],
+  "workspaces": ["apps/*", "packages/*"],
   "scripts": {
-    "dev": "concurrently -n WEB,API -c cyan,green \"npm run dev:web\" \"npm run dev:api\"",
-    "dev:web": "npm --prefix apps/web run dev",
-    "dev:api": "npm --workspace @easy-seller/api run dev",
+    "dev": "concurrently -n WEB,API,WORKER -c cyan,green,yellow \"npm run dev:web\" \"npm run dev:api\" \"npm run dev:worker\"",
+    "dev:web": "npm --workspace @easy-seller/web run dev",
+    "dev:api": "node --env-file=.env --watch --import tsx apps/api/src/server.ts",
+    "dev:worker": "node --env-file=.env --watch --import tsx apps/worker/src/index.ts",
     "dev:extension": "npm --workspace @easy-seller/extension run dev",
     "build": "npm run build:packages && npm run build:api && npm run build:extension && npm run build:web",
-    "build:packages": "npm --workspace @easy-seller/calculations run build",
+    "build:packages": "npm --workspace @easy-seller/calculations run build && npm --workspace @easy-seller/catalog run build && npm --workspace @easy-seller/amazon run build",
     "build:api": "npm --workspace @easy-seller/api run build",
     "build:extension": "npm --workspace @easy-seller/extension run build",
-    "build:web": "npm --prefix apps/web run build",
-    "test": "npm --workspace @easy-seller/calculations test"
+    "build:web": "npm --workspace @easy-seller/web run build",
+    "lint": "npm run lint --workspaces --if-present",
+    "typecheck": "npm run typecheck --workspaces --if-present",
+    "test": "npm --workspace @easy-seller/calculations test && npm --workspace @easy-seller/catalog test && npm --workspace @easy-seller/amazon test",
+    "test:db": "node --import tsx scripts/db-baseline-check.mjs",
+    "test:worker": "node --import tsx scripts/worker-smoke.mjs",
+    "test:baseline": "node --env-file-if-exists=.env.test scripts/run-baseline-gate.mjs",
+    "db:generate": "node --env-file=.env node_modules/prisma/build/index.js generate --schema packages/db/prisma/schema.prisma",
+    "db:migrate": "node --env-file=.env node_modules/prisma/build/index.js migrate deploy --schema packages/db/prisma/schema.prisma",
+    "db:seed": "node --env-file=.env node_modules/tsx/dist/cli.mjs packages/db/prisma/seed.ts",
+    "db:reset": "node --env-file-if-exists=.env.test scripts/safe-db-reset.mjs",
+    "smoke": "node scripts/smoke-test.mjs",
+    "smoke:phase3": "node --env-file=.env --import tsx scripts/phase3-smoke.mjs"
   },
   "devDependencies": {
     "concurrently": "^9.2.1",
+    "vite": "8.0.13",
     "typescript": "^5.9.3",
-    "vitest": "^3.2.4"
+    "vitest": "^3.2.4",
+    "oxlint": "^1.76.0"
   }
 }

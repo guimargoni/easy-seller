@@ -4,13 +4,13 @@
 
 Documentação, monorepo, schema, API mock, painel, CRUD, calculadora, score, recomendação e extensão básica. Saída: produto demonstrável sem credenciais externas.
 
-## Fase 2 — Catálogo e acompanhamento
+## Fase 2 — Pesquisa e validação de produtos (concluída)
 
-Uploads CSV/XLSX, storage, catálogo/versões, histórico de custo, snapshots, filtros, dashboard persistido e alertas simples. Introduzir BullMQ e revisão de import.
+Cadastro dos dez candidatos da mentoria, workflow de pesquisa, critérios configuráveis, comparação ranqueada e explicável, análise por estratégia, autorização de marca/produto Amazon e checklist humano de compra. Sem PDF automático e sem SP-API.
 
-## Fase 3 — Amazon oficial
+## Fase 3 — Supplier Intelligence e Catalog Ingestion — concluída
 
-Adapters SP-API para catálogo, pricing, fees, rank e competição; quotas, cache, auditoria de origem e degradação segura.
+Upload CSV/XLSX/PDF, catálogo manual, URL de referência, arquivos originais, processamento assíncrono persistido, confiança por campo, revisão humana, versionamento, comparação, histórico de preço, exposição de capital e shortlist pós-validação. Sem SP-API e sem coleta automática de dados Amazon.
 
 ## Fase 4 — Inteligência em escala
 
@@ -22,6 +22,6 @@ Multi-tenant, autenticação, planos, billing, limites, observabilidade, backup,
 
 ## Próximas três iterações
 
-1. Persistir CRUD da Fase 1 no PostgreSQL e adicionar migrations/seed executáveis.
-2. Implementar CSV/XLSX com revisão humana e histórico de preço do fornecedor.
-3. Conectar um provider Amazon sandbox e medir qualidade por categoria.
+1. Validar a Fase 2 com candidatos reais e calibrar os pesos sem ocultar bloqueios de autorização.
+2. Validar a ingestão com catálogos reais de fornecedores e calibrar aliases/threshold.
+3. Não iniciar a Fase 4 sem decisão explícita.

@@ -2,7 +2,13 @@
 CREATE SCHEMA IF NOT EXISTS "public";
 
 -- CreateEnum
-CREATE TYPE "OpportunityStatus" AS ENUM ('TEST', 'APPROVED', 'DISCARDED', 'WATCHING');
+CREATE TYPE "OpportunityStatus" AS ENUM ('RESEARCHING', 'TEST', 'APPROVED', 'DISCARDED', 'WATCHING');
+
+-- CreateEnum
+CREATE TYPE "StrategyType" AS ENUM ('BRANDED_RESELL', 'GENERIC_LISTING');
+
+-- CreateEnum
+CREATE TYPE "StrategyProfile" AS ENUM ('FAST_CASH', 'BALANCED', 'HIGH_MARGIN');
 
 -- CreateEnum
 CREATE TYPE "RiskLevel" AS ENUM ('LOW', 'MEDIUM', 'HIGH');
@@ -24,9 +30,28 @@ CREATE TABLE "User" (
     "id" TEXT NOT NULL,
     "email" TEXT NOT NULL,
     "name" TEXT,
+    "isDemo" BOOLEAN NOT NULL DEFAULT false,
     "createdAt" TIMESTAMP(3) NOT NULL DEFAULT CURRENT_TIMESTAMP,
 
     CONSTRAINT "User_pkey" PRIMARY KEY ("id")
+);
+
+-- CreateTable
+CREATE TABLE "UserSettings" (
+    "id" TEXT NOT NULL,
+    "userId" TEXT NOT NULL,
+    "capitalTotalCents" INTEGER NOT NULL DEFAULT 0,
+    "capitalReserveCents" INTEGER NOT NULL DEFAULT 0,
+    "targetMarginMinBasisPoints" INTEGER NOT NULL DEFAULT 1500,
+    "targetMarginIdealBasisPoints" INTEGER NOT NULL DEFAULT 1800,
+    "targetRoiMinBasisPoints" INTEGER NOT NULL DEFAULT 2500,
+    "maxTestExposureBasisPoints" INTEGER NOT NULL DEFAULT 500,
+    "preferredMaxTurnoverDays" INTEGER NOT NULL DEFAULT 30,
+    "strategyProfile" "StrategyProfile" NOT NULL DEFAULT 'FAST_CASH',
+    "simpleMode" BOOLEAN NOT NULL DEFAULT true,
+    "updatedAt" TIMESTAMP(3) NOT NULL,
+
+    CONSTRAINT "UserSettings_pkey" PRIMARY KEY ("id")
 );
 
 -- CreateTable
@@ -38,6 +63,15 @@ CREATE TABLE "Product" (
     "ean" TEXT,
     "category" TEXT,
     "imageUrl" TEXT,
+    "strategyType" "StrategyType" NOT NULL DEFAULT 'BRANDED_RESELL',
+    "status" "OpportunityStatus" NOT NULL DEFAULT 'RESEARCHING',
+    "salePriceCents" INTEGER,
+    "monthlySalesEstimate" INTEGER,
+    "sellerCount" INTEGER,
+    "amazonIsSeller" BOOLEAN,
+    "priceStability" INTEGER,
+    "demandStability" INTEGER,
+    "dataOrigin" "DataOrigin" NOT NULL DEFAULT 'INFERRED',
     "createdAt" TIMESTAMP(3) NOT NULL DEFAULT CURRENT_TIMESTAMP,
     "updatedAt" TIMESTAMP(3) NOT NULL,
 
@@ -64,6 +98,7 @@ CREATE TABLE "Supplier" (
     "cnpj" TEXT,
     "contact" TEXT,
     "phone" TEXT,
+    "whatsapp" TEXT,
     "email" TEXT,
     "website" TEXT,
     "city" TEXT,
@@ -75,6 +110,7 @@ CREATE TABLE "Supplier" (
     "paymentTerms" TEXT,
     "shippingNotes" TEXT,
     "notes" TEXT,
+    "hasCatalog" BOOLEAN NOT NULL DEFAULT false,
     "lastContactAt" TIMESTAMP(3),
 
     CONSTRAINT "Supplier_pkey" PRIMARY KEY ("id")
@@ -145,6 +181,40 @@ CREATE TABLE "Opportunity" (
     "calculatedAt" TIMESTAMP(3) NOT NULL DEFAULT CURRENT_TIMESTAMP,
 
     CONSTRAINT "Opportunity_pkey" PRIMARY KEY ("id")
+);
+
+-- CreateTable
+CREATE TABLE "Analysis" (
+    "id" TEXT NOT NULL,
+    "userId" TEXT NOT NULL,
+    "productId" TEXT NOT NULL,
+    "salePriceCents" INTEGER NOT NULL,
+    "productCostCents" INTEGER NOT NULL,
+    "inboundShippingCents" INTEGER NOT NULL DEFAULT 0,
+    "packagingCents" INTEGER NOT NULL DEFAULT 0,
+    "taxBasisPoints" INTEGER NOT NULL DEFAULT 0,
+    "amazonCommissionCents" INTEGER NOT NULL DEFAULT 0,
+    "amazonLogisticsCents" INTEGER NOT NULL DEFAULT 0,
+    "advertisingCents" INTEGER NOT NULL DEFAULT 0,
+    "otherExpensesCents" INTEGER NOT NULL DEFAULT 0,
+    "quantity" INTEGER NOT NULL DEFAULT 1,
+    "totalExpensesCents" INTEGER NOT NULL,
+    "netProfitCents" INTEGER NOT NULL,
+    "marginBasisPoints" INTEGER NOT NULL,
+    "roiBasisPoints" INTEGER NOT NULL,
+    "markupBasisPoints" INTEGER NOT NULL,
+    "breakEvenPriceCents" INTEGER NOT NULL,
+    "maxPurchasePriceCents" INTEGER NOT NULL,
+    "score" INTEGER NOT NULL,
+    "classification" TEXT NOT NULL,
+    "scoreComponents" JSONB NOT NULL,
+    "positives" JSONB NOT NULL,
+    "warnings" JSONB NOT NULL,
+    "strategyProfile" "StrategyProfile" NOT NULL,
+    "dataOrigin" "DataOrigin" NOT NULL DEFAULT 'INFERRED',
+    "createdAt" TIMESTAMP(3) NOT NULL DEFAULT CURRENT_TIMESTAMP,
+
+    CONSTRAINT "Analysis_pkey" PRIMARY KEY ("id")
 );
 
 -- CreateTable
@@ -268,6 +338,9 @@ CREATE TABLE "Alert" (
 CREATE UNIQUE INDEX "User_email_key" ON "User"("email");
 
 -- CreateIndex
+CREATE UNIQUE INDEX "UserSettings_userId_key" ON "UserSettings"("userId");
+
+-- CreateIndex
 CREATE INDEX "Product_userId_name_idx" ON "Product"("userId", "name");
 
 -- CreateIndex
@@ -295,6 +368,12 @@ CREATE INDEX "CompetitionSnapshot_listingId_timestamp_idx" ON "CompetitionSnapsh
 CREATE INDEX "Opportunity_productId_calculatedAt_idx" ON "Opportunity"("productId", "calculatedAt");
 
 -- CreateIndex
+CREATE INDEX "Analysis_userId_createdAt_idx" ON "Analysis"("userId", "createdAt");
+
+-- CreateIndex
+CREATE INDEX "Analysis_productId_createdAt_idx" ON "Analysis"("productId", "createdAt");
+
+-- CreateIndex
 CREATE UNIQUE INDEX "Catalog_supplierId_version_key" ON "Catalog"("supplierId", "version");
 
 -- CreateIndex
@@ -307,19 +386,22 @@ CREATE INDEX "CatalogProduct_ean_idx" ON "CatalogProduct"("ean");
 CREATE INDEX "SupplierProductPrice_supplierProductId_observedAt_idx" ON "SupplierProductPrice"("supplierProductId", "observedAt");
 
 -- AddForeignKey
-ALTER TABLE "Product" ADD CONSTRAINT "Product_userId_fkey" FOREIGN KEY ("userId") REFERENCES "User"("id") ON DELETE RESTRICT ON UPDATE CASCADE;
+ALTER TABLE "UserSettings" ADD CONSTRAINT "UserSettings_userId_fkey" FOREIGN KEY ("userId") REFERENCES "User"("id") ON DELETE CASCADE ON UPDATE CASCADE;
 
 -- AddForeignKey
-ALTER TABLE "AmazonListing" ADD CONSTRAINT "AmazonListing_productId_fkey" FOREIGN KEY ("productId") REFERENCES "Product"("id") ON DELETE RESTRICT ON UPDATE CASCADE;
+ALTER TABLE "Product" ADD CONSTRAINT "Product_userId_fkey" FOREIGN KEY ("userId") REFERENCES "User"("id") ON DELETE CASCADE ON UPDATE CASCADE;
 
 -- AddForeignKey
-ALTER TABLE "Supplier" ADD CONSTRAINT "Supplier_userId_fkey" FOREIGN KEY ("userId") REFERENCES "User"("id") ON DELETE RESTRICT ON UPDATE CASCADE;
+ALTER TABLE "AmazonListing" ADD CONSTRAINT "AmazonListing_productId_fkey" FOREIGN KEY ("productId") REFERENCES "Product"("id") ON DELETE CASCADE ON UPDATE CASCADE;
 
 -- AddForeignKey
-ALTER TABLE "SupplierProduct" ADD CONSTRAINT "SupplierProduct_supplierId_fkey" FOREIGN KEY ("supplierId") REFERENCES "Supplier"("id") ON DELETE RESTRICT ON UPDATE CASCADE;
+ALTER TABLE "Supplier" ADD CONSTRAINT "Supplier_userId_fkey" FOREIGN KEY ("userId") REFERENCES "User"("id") ON DELETE CASCADE ON UPDATE CASCADE;
 
 -- AddForeignKey
-ALTER TABLE "SupplierProduct" ADD CONSTRAINT "SupplierProduct_productId_fkey" FOREIGN KEY ("productId") REFERENCES "Product"("id") ON DELETE SET NULL ON UPDATE CASCADE;
+ALTER TABLE "SupplierProduct" ADD CONSTRAINT "SupplierProduct_supplierId_fkey" FOREIGN KEY ("supplierId") REFERENCES "Supplier"("id") ON DELETE CASCADE ON UPDATE CASCADE;
+
+-- AddForeignKey
+ALTER TABLE "SupplierProduct" ADD CONSTRAINT "SupplierProduct_productId_fkey" FOREIGN KEY ("productId") REFERENCES "Product"("id") ON DELETE CASCADE ON UPDATE CASCADE;
 
 -- AddForeignKey
 ALTER TABLE "PriceSnapshot" ADD CONSTRAINT "PriceSnapshot_listingId_fkey" FOREIGN KEY ("listingId") REFERENCES "AmazonListing"("id") ON DELETE RESTRICT ON UPDATE CASCADE;
@@ -331,7 +413,13 @@ ALTER TABLE "RankSnapshot" ADD CONSTRAINT "RankSnapshot_listingId_fkey" FOREIGN 
 ALTER TABLE "CompetitionSnapshot" ADD CONSTRAINT "CompetitionSnapshot_listingId_fkey" FOREIGN KEY ("listingId") REFERENCES "AmazonListing"("id") ON DELETE RESTRICT ON UPDATE CASCADE;
 
 -- AddForeignKey
-ALTER TABLE "Opportunity" ADD CONSTRAINT "Opportunity_productId_fkey" FOREIGN KEY ("productId") REFERENCES "Product"("id") ON DELETE RESTRICT ON UPDATE CASCADE;
+ALTER TABLE "Opportunity" ADD CONSTRAINT "Opportunity_productId_fkey" FOREIGN KEY ("productId") REFERENCES "Product"("id") ON DELETE CASCADE ON UPDATE CASCADE;
+
+-- AddForeignKey
+ALTER TABLE "Analysis" ADD CONSTRAINT "Analysis_userId_fkey" FOREIGN KEY ("userId") REFERENCES "User"("id") ON DELETE CASCADE ON UPDATE CASCADE;
+
+-- AddForeignKey
+ALTER TABLE "Analysis" ADD CONSTRAINT "Analysis_productId_fkey" FOREIGN KEY ("productId") REFERENCES "Product"("id") ON DELETE CASCADE ON UPDATE CASCADE;
 
 -- AddForeignKey
 ALTER TABLE "Catalog" ADD CONSTRAINT "Catalog_supplierId_fkey" FOREIGN KEY ("supplierId") REFERENCES "Supplier"("id") ON DELETE RESTRICT ON UPDATE CASCADE;
@@ -352,10 +440,10 @@ ALTER TABLE "SupplierProductPrice" ADD CONSTRAINT "SupplierProductPrice_supplier
 ALTER TABLE "SupplierProductPrice" ADD CONSTRAINT "SupplierProductPrice_catalogId_fkey" FOREIGN KEY ("catalogId") REFERENCES "Catalog"("id") ON DELETE SET NULL ON UPDATE CASCADE;
 
 -- AddForeignKey
-ALTER TABLE "DecisionLog" ADD CONSTRAINT "DecisionLog_userId_fkey" FOREIGN KEY ("userId") REFERENCES "User"("id") ON DELETE RESTRICT ON UPDATE CASCADE;
+ALTER TABLE "DecisionLog" ADD CONSTRAINT "DecisionLog_userId_fkey" FOREIGN KEY ("userId") REFERENCES "User"("id") ON DELETE CASCADE ON UPDATE CASCADE;
 
 -- AddForeignKey
-ALTER TABLE "DecisionLog" ADD CONSTRAINT "DecisionLog_productId_fkey" FOREIGN KEY ("productId") REFERENCES "Product"("id") ON DELETE RESTRICT ON UPDATE CASCADE;
+ALTER TABLE "DecisionLog" ADD CONSTRAINT "DecisionLog_productId_fkey" FOREIGN KEY ("productId") REFERENCES "Product"("id") ON DELETE CASCADE ON UPDATE CASCADE;
 
 -- AddForeignKey
-ALTER TABLE "Alert" ADD CONSTRAINT "Alert_userId_fkey" FOREIGN KEY ("userId") REFERENCES "User"("id") ON DELETE RESTRICT ON UPDATE CASCADE;
+ALTER TABLE "Alert" ADD CONSTRAINT "Alert_userId_fkey" FOREIGN KEY ("userId") REFERENCES "User"("id") ON DELETE CASCADE ON UPDATE CASCADE;

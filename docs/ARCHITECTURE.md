@@ -22,7 +22,7 @@ Web / Chrome Extension
 3. **Fastify + Zod.** API pequena, validada nas fronteiras e com logging estruturado nativo.
 4. **PostgreSQL + Prisma.** Integridade relacional e migrations legíveis; JSON apenas para evidências variáveis como confiança por campo.
 5. **Providers Amazon isolados.** SP-API e qualquer fonte futura implementam interfaces; mocks suportam desenvolvimento sem credenciais.
-6. **BullMQ para processos longos.** Importação de catálogo e snapshots nunca bloqueiam requests.
+6. **Fila persistida para processos longos.** `CatalogImport` é a fila no PostgreSQL e o worker reivindica jobs de forma atômica; importação nunca bloqueia requests e sobrevive a reinícios.
 7. **Valores monetários persistidos em centavos.** Evita arredondamento binário. Funções aceitam reais no MVP e arredondam nas saídas.
 8. **Single-user sem autenticação na Fase 1.** Toda entidade já possui caminho para `userId`/tenant na evolução SaaS.
 9. **Estimativas rotuladas.** Todo sinal Amazon carrega `REAL`, `ESTIMATED` ou `INFERRED`, além de confiança.
@@ -34,9 +34,19 @@ Web / Chrome Extension
 - Extensão: identifica ASIN → consulta API/mock → mostra overlay → salva produto.
 - Fornecedor: CRUD REST com cadastro essencial.
 
+## Fluxos da Fase 2
+
+- Pesquisa: cadastro persistente → análise financeira preliminar → sinais específicos da estratégia → restrições explícitas → ranking.
+- `GENERIC_LISTING`: pondera ranqueamento, espaço para publicidade, avaliações, maturidade do anúncio e risco de entrada.
+- `BRANDED_RESELL`: pondera Buy Box, concorrentes, preço, giro e presença da Amazon; autorização de marca/produto limita a recomendação fora do score.
+- A API bloqueia `READY_TO_BUY` enquanto o checklist ou uma autorização obrigatória estiver pendente. A interface também desabilita esse estado.
+- `GET /research/candidates` usa as configurações do usuário e devolve colocação, recomendação, explicação comparativa, sinais e restrições.
+
+PDF automático, SP-API e automação de compra permanecem fora desta fase.
+
 ## Catálogos (arquitetura preparada)
 
-O pipeline futuro separa `PdfTextExtractor`, `PdfLayoutExtractor`, `ProductBlockDetector` e `CatalogNormalizer`. Cada bloco preserva página, bounding boxes, imagem e texto bruto. OCR é fallback por página. Imports viram jobs idempotentes, versionados e retomáveis; QR/links são apenas apresentados até ação explícita.
+O pipeline separa `CatalogImport`, `PdfTextExtractor`, `PdfLayoutExtractor`, `ProductBlockDetector` e `CatalogNormalizer`. A ordem é texto nativo, layout, detecção de imagens e OCR como fallback. Texto bruto, página, método e confiança são preservados; ausência de evidência produz `null`, nunca um campo inventado. URLs externas são armazenadas apenas como referência.
 
 ## Segurança e observabilidade
 
@@ -59,6 +69,6 @@ O pipeline futuro separa `PdfTextExtractor`, `PdfLayoutExtractor`, `ProductBlock
 ## Dependências operacionais
 
 - Node.js 22+, PostgreSQL 17, Redis 7.
-- Credenciais SP-API e autorização Seller Central somente na Fase 3.
-- Storage de objetos para catálogos na Fase 2.
-- OCR/decoder QR selecionados após benchmark com catálogos reais.
+- SP-API e autorização Seller Central permanecem fora da Fase 3.
+- O armazenamento local de originais usa `CATALOG_STORAGE_DIR`; produção deve trocar por object storage com a mesma política imutável.
+- O fallback OCR usa Tesseract local somente após texto/layout e deve ter idiomas e threshold calibrados com catálogos escaneados reais.

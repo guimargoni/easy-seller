@@ -2,8 +2,11 @@ node_modules/
 dist/
 .vinext/
 .env
+.env.test
 *.log
+*.tsbuildinfo
 apps/web/node_modules/
 apps/web/dist/
 apps/web/.vinext/
 apps/extension/.vite/
+.runtime/

@@ -18,6 +18,16 @@ Vendedor Amazon Brasil, capital aproximado de R$ 20 mil, operação ainda em val
 - Extensão MV3 básica para páginas de produto, com overlay e ação de salvar.
 - Modo simples/avançado no painel.
 
+## Fase 2 entregue
+
+- Registro dos dez candidatos do exercício da mentoria e acompanhamento do progresso `x/10`.
+- Fluxo `CANDIDATO → PESQUISA → VALIDAÇÃO → TESTE → APROVADO/DESCARTADO`.
+- Comparação ranqueada com motivo da colocação e recomendação `BUY_TEST`, `WATCH` ou `AVOID`.
+- Análise distinta para `GENERIC_LISTING` e `BRANDED_RESELL`.
+- Critérios configuráveis: margens mínima/ideal, ROI mínimo, giro máximo, vendedores máximos e exposição máxima.
+- Autorização de marca e Amazon visíveis, com justificativas fora do número do score.
+- Checklist humano obrigatório antes de `READY_TO_BUY`; nenhuma compra é automatizada.
+
 ## Regras iniciais
 
 - Meta de margem líquida: 15%; ROI: 25%; vendas: 30/mês.
@@ -46,9 +56,9 @@ Verde = boa oportunidade, amarelo = atenção, vermelho = risco; todos incluem t
 - Produto novo recebe lote de teste limitado pela exposição de capital.
 - API rejeita payload inválido e não depende de integração Amazon real.
 
-## Fora da Fase 1
+## Fora da Fase 2
 
-Ingestão PDF/CSV/XLSX, catálogo versionado, matching real, snapshots históricos, jobs BullMQ ativos, SP-API, autenticação multiusuário, billing e modelos calibrados.
+Ingestão automática de PDF, SP-API, compra automatizada, matching real, jobs BullMQ ativos, autenticação multiusuário, billing e modelos calibrados.
 
 ## Métricas de produto futuras
 
