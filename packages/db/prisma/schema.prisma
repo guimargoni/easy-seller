@@ -109,389 +109,487 @@ enum DataConfidence {
   LOW
 }
 
+enum MembershipRole {
+  OWNER
+  ADMIN
+  FINANCE
+  OPERATIONS
+  ADS_MANAGER
+  ANALYST
+  VIEWER
+}
+
 model User {
-  id String @id @default(cuid())
-  email String @unique
-  name String?
-  products Product[]
-  suppliers Supplier[]
-  decisions DecisionLog[]
-  alerts Alert[]
-  settings UserSettings?
-  analyses Analysis[]
-  isDemo Boolean @default(false)
-  createdAt DateTime @default(now())
+  id          String        @id @default(cuid())
+  email       String        @unique
+  name        String?
+  products    Product[]
+  suppliers   Supplier[]
+  decisions   DecisionLog[]
+  alerts      Alert[]
+  settings    UserSettings?
+  analyses    Analysis[]
+  memberships Membership[]
+  auditLogs   AuditLog[]    @relation("AuditActor")
+  isDemo      Boolean       @default(false)
+  createdAt   DateTime      @default(now())
+}
+
+model Organization {
+  id                 String        @id @default(cuid())
+  name               String
+  cnpj               String?
+  timezone           String        @default("America/Sao_Paulo")
+  currency           String        @default("BRL")
+  taxRegime          String?
+  fiscalSettings     Json?
+  isMigrationDefault Boolean       @default(false)
+  memberships        Membership[]
+  products           Product[]
+  suppliers          Supplier[]
+  analyses           Analysis[]
+  opportunities      Opportunity[]
+  decisions          DecisionLog[]
+  alerts             Alert[]
+  auditLogs          AuditLog[]
+  createdAt          DateTime      @default(now())
+  updatedAt          DateTime      @updatedAt
+}
+
+model Membership {
+  id             String         @id @default(cuid())
+  userId         String
+  user           User           @relation(fields: [userId], references: [id], onDelete: Cascade)
+  organizationId String
+  organization   Organization   @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+  role           MembershipRole
+  createdAt      DateTime       @default(now())
+  updatedAt      DateTime       @updatedAt
+
+  @@unique([userId, organizationId])
+  @@index([organizationId, role])
+}
+
+model AuditLog {
+  id             String       @id @default(cuid())
+  organizationId String
+  organization   Organization @relation(fields: [organizationId], references: [id], onDelete: Restrict)
+  actorUserId    String?
+  actorUser      User?        @relation("AuditActor", fields: [actorUserId], references: [id], onDelete: SetNull)
+  action         String
+  entityType     String
+  entityId       String?
+  metadata       Json?
+  createdAt      DateTime     @default(now())
+
+  @@index([organizationId, createdAt])
+  @@index([organizationId, entityType, entityId])
+  @@index([actorUserId, createdAt])
 }
 
 model UserSettings {
-  id String @id @default(cuid())
-  userId String @unique
-  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
-  capitalTotalCents Int @default(0)
-  capitalReserveCents Int @default(0)
-  targetMarginMinBasisPoints Int @default(1500)
-  targetMarginIdealBasisPoints Int @default(1800)
-  targetRoiMinBasisPoints Int @default(2500)
-  maxTestExposureBasisPoints Int @default(500)
-  preferredMaxTurnoverDays Int @default(30)
-  maximumSellerCount Int @default(5)
-  strategyProfile StrategyProfile @default(FAST_CASH)
-  simpleMode Boolean @default(true)
-  updatedAt DateTime @updatedAt
+  id                           String          @id @default(cuid())
+  userId                       String          @unique
+  user                         User            @relation(fields: [userId], references: [id], onDelete: Cascade)
+  capitalTotalCents            Int             @default(0)
+  capitalReserveCents          Int             @default(0)
+  targetMarginMinBasisPoints   Int             @default(1500)
+  targetMarginIdealBasisPoints Int             @default(1800)
+  targetRoiMinBasisPoints      Int             @default(2500)
+  maxTestExposureBasisPoints   Int             @default(500)
+  preferredMaxTurnoverDays     Int             @default(30)
+  maximumSellerCount           Int             @default(5)
+  strategyProfile              StrategyProfile @default(FAST_CASH)
+  simpleMode                   Boolean         @default(true)
+  updatedAt                    DateTime        @updatedAt
 }
 
 model Product {
-  id String @id @default(cuid())
-  userId String
-  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
-  name String
-  brand String?
-  ean String?
-  category String?
-  imageUrl String?
-  strategyType StrategyType @default(BRANDED_RESELL)
-  status OpportunityStatus @default(RESEARCHING)
-  salePriceCents Int?
-  monthlySalesEstimate Int?
-  sellerCount Int?
-  amazonIsSeller Boolean?
-  priceStability Int?
-  demandStability Int?
-  researchOrigin String?
-  ratingBasisPoints Int?
-  reviewCount Int?
-  historyAvailable Boolean @default(false)
-  estimatedTurnoverDays Int?
-  observations String?
-  brandApprovalStatus BrandApprovalStatus @default(UNKNOWN)
-  amazonApprovalStatus AmazonApprovalStatus @default(NOT_CHECKED)
-  approvalCheckedAt DateTime?
-  approvalNotes String?
-  approvalRequiredQuantity Int?
-  approvalDocumentType String?
-  checkedAmazonApproval Boolean @default(false)
-  hasValidSupplier Boolean @default(false)
-  supplierDocumentAccepted Boolean @default(false)
-  requiredQuantityViable Boolean @default(false)
-  approvalCompletedIfNeeded Boolean @default(false)
-  dataOrigin DataOrigin @default(INFERRED)
-  listings AmazonListing[]
-  supplierProducts SupplierProduct[]
-  opportunities Opportunity[]
-  decisions DecisionLog[]
-  analyses Analysis[]
-  catalogProducts CatalogProduct[]
-  createdAt DateTime @default(now())
-  updatedAt DateTime @updatedAt
+  id                        String               @id @default(cuid())
+  userId                    String
+  user                      User                 @relation(fields: [userId], references: [id], onDelete: Cascade)
+  organizationId            String?
+  organization              Organization?        @relation(fields: [organizationId], references: [id], onDelete: Restrict)
+  name                      String
+  brand                     String?
+  ean                       String?
+  category                  String?
+  imageUrl                  String?
+  strategyType              StrategyType         @default(BRANDED_RESELL)
+  status                    OpportunityStatus    @default(RESEARCHING)
+  salePriceCents            Int?
+  monthlySalesEstimate      Int?
+  sellerCount               Int?
+  amazonIsSeller            Boolean?
+  priceStability            Int?
+  demandStability           Int?
+  researchOrigin            String?
+  ratingBasisPoints         Int?
+  reviewCount               Int?
+  historyAvailable          Boolean              @default(false)
+  estimatedTurnoverDays     Int?
+  observations              String?
+  brandApprovalStatus       BrandApprovalStatus  @default(UNKNOWN)
+  amazonApprovalStatus      AmazonApprovalStatus @default(NOT_CHECKED)
+  approvalCheckedAt         DateTime?
+  approvalNotes             String?
+  approvalRequiredQuantity  Int?
+  approvalDocumentType      String?
+  checkedAmazonApproval     Boolean              @default(false)
+  hasValidSupplier          Boolean              @default(false)
+  supplierDocumentAccepted  Boolean              @default(false)
+  requiredQuantityViable    Boolean              @default(false)
+  approvalCompletedIfNeeded Boolean              @default(false)
+  dataOrigin                DataOrigin           @default(INFERRED)
+  listings                  AmazonListing[]
+  supplierProducts          SupplierProduct[]
+  opportunities             Opportunity[]
+  decisions                 DecisionLog[]
+  analyses                  Analysis[]
+  catalogProducts           CatalogProduct[]
+  createdAt                 DateTime             @default(now())
+  updatedAt                 DateTime             @updatedAt
+
   @@index([userId, name])
+  @@index([organizationId, name])
 }
 
 model AmazonListing {
-  id String @id @default(cuid())
-  productId String
-  product Product @relation(fields: [productId], references: [id], onDelete: Cascade)
-  asin String
-  url String?
-  origin DataOrigin @default(INFERRED)
-  title String?
-  brand String?
-  imageUrl String?
-  ratingBasisPoints Int?
-  reviewCount Int?
-  historyAvailable Boolean @default(false)
-  catalogOrigin DataOrigin?
-  catalogConfidence DataConfidence?
-  catalogSource String?
-  catalogObservedAt DateTime?
-  priceSnapshots PriceSnapshot[]
-  rankSnapshots RankSnapshot[]
+  id                   String                @id @default(cuid())
+  productId            String
+  product              Product               @relation(fields: [productId], references: [id], onDelete: Cascade)
+  asin                 String
+  url                  String?
+  origin               DataOrigin            @default(INFERRED)
+  title                String?
+  brand                String?
+  imageUrl             String?
+  ratingBasisPoints    Int?
+  reviewCount          Int?
+  historyAvailable     Boolean               @default(false)
+  catalogOrigin        DataOrigin?
+  catalogConfidence    DataConfidence?
+  catalogSource        String?
+  catalogObservedAt    DateTime?
+  priceSnapshots       PriceSnapshot[]
+  rankSnapshots        RankSnapshot[]
   competitionSnapshots CompetitionSnapshot[]
+
   @@unique([productId, asin])
   @@index([asin])
 }
 
 model Supplier {
-  id String @id @default(cuid())
-  userId String
-  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
-  name String
-  legalName String?
-  cnpj String?
-  contact String?
-  phone String?
-  whatsapp String?
-  email String?
-  website String?
-  city String?
-  state String?
-  segment String?
-  issuesInvoice Boolean @default(false)
+  id                String            @id @default(cuid())
+  userId            String
+  user              User              @relation(fields: [userId], references: [id], onDelete: Cascade)
+  organizationId    String?
+  organization      Organization?     @relation(fields: [organizationId], references: [id], onDelete: Restrict)
+  name              String
+  legalName         String?
+  cnpj              String?
+  contact           String?
+  phone             String?
+  whatsapp          String?
+  email             String?
+  website           String?
+  city              String?
+  state             String?
+  segment           String?
+  issuesInvoice     Boolean           @default(false)
   minimumOrderCents Int?
-  leadTimeDays Int?
-  paymentTerms String?
-  shippingNotes String?
-  notes String?
-  hasCatalog Boolean @default(false)
-  lastContactAt DateTime?
-  products SupplierProduct[]
-  catalogs Catalog[]
+  leadTimeDays      Int?
+  paymentTerms      String?
+  shippingNotes     String?
+  notes             String?
+  hasCatalog        Boolean           @default(false)
+  lastContactAt     DateTime?
+  products          SupplierProduct[]
+  catalogs          Catalog[]
+
   @@index([userId, name])
+  @@index([organizationId, name])
 }
 
 model SupplierProduct {
-  id String @id @default(cuid())
-  supplierId String
-  supplier Supplier @relation(fields: [supplierId], references: [id], onDelete: Cascade)
-  productId String?
-  product Product? @relation(fields: [productId], references: [id], onDelete: Cascade)
-  supplierSku String?
-  costCents Int
-  stock Int?
-  minimumQty Int?
+  id           String                 @id @default(cuid())
+  supplierId   String
+  supplier     Supplier               @relation(fields: [supplierId], references: [id], onDelete: Cascade)
+  productId    String?
+  product      Product?               @relation(fields: [productId], references: [id], onDelete: Cascade)
+  supplierSku  String?
+  costCents    Int
+  stock        Int?
+  minimumQty   Int?
   priceHistory SupplierProductPrice[]
-  updatedAt DateTime @updatedAt
+  updatedAt    DateTime               @updatedAt
+
   @@index([supplierId, supplierSku])
 }
 
 model PriceSnapshot {
-  id String @id @default(cuid())
-  listingId String
-  listing AmazonListing @relation(fields: [listingId], references: [id])
-  priceCents Int
+  id               String         @id @default(cuid())
+  listingId        String
+  listing          AmazonListing  @relation(fields: [listingId], references: [id])
+  priceCents       Int
   buyBoxPriceCents Int?
-  shippingCents Int?
-  origin DataOrigin
-  confidence DataConfidence
-  source String
-  timestamp DateTime @default(now())
+  shippingCents    Int?
+  origin           DataOrigin
+  confidence       DataConfidence
+  source           String
+  timestamp        DateTime       @default(now())
+
   @@index([listingId, timestamp])
 }
 
 model RankSnapshot {
-  id String @id @default(cuid())
-  listingId String
-  listing AmazonListing @relation(fields: [listingId], references: [id])
-  salesRank Int
+  id              String         @id @default(cuid())
+  listingId       String
+  listing         AmazonListing  @relation(fields: [listingId], references: [id])
+  salesRank       Int
   subcategoryRank Int?
-  category String?
-  origin DataOrigin
-  confidence DataConfidence
-  source String
-  timestamp DateTime @default(now())
+  category        String?
+  origin          DataOrigin
+  confidence      DataConfidence
+  source          String
+  timestamp       DateTime       @default(now())
+
   @@index([listingId, timestamp])
 }
 
 model CompetitionSnapshot {
-  id String @id @default(cuid())
-  listingId String
-  listing AmazonListing @relation(fields: [listingId], references: [id])
-  sellerCount Int
-  fbaSellerCount Int?
-  amazonIsSeller Boolean
-  origin DataOrigin
-  confidence DataConfidence
-  source String
-  amazonOrigin DataOrigin
+  id               String         @id @default(cuid())
+  listingId        String
+  listing          AmazonListing  @relation(fields: [listingId], references: [id])
+  sellerCount      Int
+  fbaSellerCount   Int?
+  amazonIsSeller   Boolean
+  origin           DataOrigin
+  confidence       DataConfidence
+  source           String
+  amazonOrigin     DataOrigin
   amazonConfidence DataConfidence
-  amazonSource String
-  timestamp DateTime @default(now())
+  amazonSource     String
+  timestamp        DateTime       @default(now())
+
   @@index([listingId, timestamp])
 }
 
 model Opportunity {
-  id String @id @default(cuid())
-  productId String
-  product Product @relation(fields: [productId], references: [id], onDelete: Cascade)
-  score Int
-  marginBasisPoints Int
-  roiBasisPoints Int
+  id                    String        @id @default(cuid())
+  productId             String
+  product               Product       @relation(fields: [productId], references: [id], onDelete: Cascade)
+  organizationId        String?
+  organization          Organization? @relation(fields: [organizationId], references: [id], onDelete: Restrict)
+  score                 Int
+  marginBasisPoints     Int
+  roiBasisPoints        Int
   estimatedMonthlySales Int
-  estimatedDaysToSell Int?
-  recommendedQty Int
+  estimatedDaysToSell   Int?
+  recommendedQty        Int
   maxPurchasePriceCents Int
-  riskLevel RiskLevel
-  modelVersion String
-  calculatedAt DateTime @default(now())
+  riskLevel             RiskLevel
+  modelVersion          String
+  calculatedAt          DateTime      @default(now())
+
   @@index([productId, calculatedAt])
+  @@index([organizationId, calculatedAt])
 }
 
 model Analysis {
-  id String @id @default(cuid())
-  userId String
-  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
-  productId String
-  product Product @relation(fields: [productId], references: [id], onDelete: Cascade)
-  salePriceCents Int
-  productCostCents Int
-  inboundShippingCents Int @default(0)
-  packagingCents Int @default(0)
-  taxBasisPoints Int @default(0)
-  amazonCommissionCents Int @default(0)
-  amazonLogisticsCents Int @default(0)
-  advertisingCents Int @default(0)
-  otherExpensesCents Int @default(0)
-  quantity Int @default(1)
-  totalExpensesCents Int
-  netProfitCents Int
-  marginBasisPoints Int
-  roiBasisPoints Int
-  markupBasisPoints Int
-  breakEvenPriceCents Int
+  id                    String          @id @default(cuid())
+  userId                String
+  user                  User            @relation(fields: [userId], references: [id], onDelete: Cascade)
+  organizationId        String?
+  organization          Organization?   @relation(fields: [organizationId], references: [id], onDelete: Restrict)
+  productId             String
+  product               Product         @relation(fields: [productId], references: [id], onDelete: Cascade)
+  salePriceCents        Int
+  productCostCents      Int
+  inboundShippingCents  Int             @default(0)
+  packagingCents        Int             @default(0)
+  taxBasisPoints        Int             @default(0)
+  amazonCommissionCents Int             @default(0)
+  amazonLogisticsCents  Int             @default(0)
+  advertisingCents      Int             @default(0)
+  otherExpensesCents    Int             @default(0)
+  quantity              Int             @default(1)
+  totalExpensesCents    Int
+  netProfitCents        Int
+  marginBasisPoints     Int
+  roiBasisPoints        Int
+  markupBasisPoints     Int
+  breakEvenPriceCents   Int
   maxPurchasePriceCents Int
-  score Int
-  classification String
-  scoreComponents Json
-  positives Json
-  warnings Json
-  strategyProfile StrategyProfile
-  dataOrigin DataOrigin @default(INFERRED)
-  createdAt DateTime @default(now())
+  score                 Int
+  classification        String
+  scoreComponents       Json
+  positives             Json
+  warnings              Json
+  strategyProfile       StrategyProfile
+  dataOrigin            DataOrigin      @default(INFERRED)
+  createdAt             DateTime        @default(now())
+
   @@index([userId, createdAt])
+  @@index([organizationId, createdAt])
   @@index([productId, createdAt])
 }
 
 model Catalog {
-  id String @id @default(cuid())
-  supplierId String
-  supplier Supplier @relation(fields: [supplierId], references: [id])
-  name String
-  sourceType CatalogSourceType
-  sourceFile String?
-  sourceUrl String?
-  catalogDate DateTime?
-  importedAt DateTime @default(now())
-  status ImportStatus
-  totalPages Int?
-  totalDetectedProducts Int @default(0)
-  totalValidatedProducts Int @default(0)
-  version Int
-  imports CatalogImport[]
-  products CatalogProduct[]
-  supplierPrices SupplierProductPrice[]
-  changes CatalogChange[] @relation("CatalogChanges")
-  comparedBy CatalogChange[] @relation("PreviousCatalogChanges")
+  id                     String                 @id @default(cuid())
+  supplierId             String
+  supplier               Supplier               @relation(fields: [supplierId], references: [id])
+  name                   String
+  sourceType             CatalogSourceType
+  sourceFile             String?
+  sourceUrl              String?
+  catalogDate            DateTime?
+  importedAt             DateTime               @default(now())
+  status                 ImportStatus
+  totalPages             Int?
+  totalDetectedProducts  Int                    @default(0)
+  totalValidatedProducts Int                    @default(0)
+  version                Int
+  imports                CatalogImport[]
+  products               CatalogProduct[]
+  supplierPrices         SupplierProductPrice[]
+  changes                CatalogChange[]        @relation("CatalogChanges")
+  comparedBy             CatalogChange[]        @relation("PreviousCatalogChanges")
+
   @@unique([supplierId, version])
 }
 
 model CatalogImport {
-  id String @id @default(cuid())
-  catalogId String
-  catalog Catalog @relation(fields: [catalogId], references: [id])
-  status ImportStatus
-  progressPercent Int @default(0)
-  currentPage Int?
-  totalPages Int?
-  startedAt DateTime?
-  finishedAt DateTime?
-  error String?
-  sourceFilename String?
-  sourceMimeType String?
-  sourceSizeBytes Int?
-  sourceSha256 String?
+  id               String       @id @default(cuid())
+  catalogId        String
+  catalog          Catalog      @relation(fields: [catalogId], references: [id])
+  status           ImportStatus
+  progressPercent  Int          @default(0)
+  currentPage      Int?
+  totalPages       Int?
+  startedAt        DateTime?
+  finishedAt       DateTime?
+  error            String?
+  sourceFilename   String?
+  sourceMimeType   String?
+  sourceSizeBytes  Int?
+  sourceSha256     String?
   extractionMethod String?
-  metadata Json?
-  createdAt DateTime @default(now())
-  updatedAt DateTime @updatedAt
+  metadata         Json?
+  createdAt        DateTime     @default(now())
+  updatedAt        DateTime     @updatedAt
+
   @@index([status, createdAt])
 }
 
 model CatalogProduct {
-  id String @id @default(cuid())
-  catalogId String
-  catalog Catalog @relation(fields: [catalogId], references: [id])
-  supplierSku String?
-  ean String?
-  gtin String?
-  rawName String?
-  normalizedName String?
-  brand String?
-  model String?
-  variant String?
-  color String?
-  voltage String?
-  unitPriceCents Int?
-  unitsPerBox Int?
-  minimumBoxes Int?
-  minimumUnits Int?
-  minimumInvestmentCents Int?
+  id                         String              @id @default(cuid())
+  catalogId                  String
+  catalog                    Catalog             @relation(fields: [catalogId], references: [id])
+  supplierSku                String?
+  ean                        String?
+  gtin                       String?
+  rawName                    String?
+  normalizedName             String?
+  brand                      String?
+  model                      String?
+  variant                    String?
+  color                      String?
+  voltage                    String?
+  unitPriceCents             Int?
+  unitsPerBox                Int?
+  minimumBoxes               Int?
+  minimumUnits               Int?
+  minimumInvestmentCents     Int?
   capitalExposureBasisPoints Int?
-  availability String?
-  pageNumber Int?
-  imageUrl String?
-  imageCropData Json?
-  rawText String?
-  fieldConfidence Json?
-  extractionConfidence Float
-  overallConfidence Float @default(0)
-  status CatalogReviewStatus @default(PENDING)
-  linkedProductId String?
-  linkedProduct Product? @relation(fields: [linkedProductId], references: [id], onDelete: SetNull)
-  reviewedAt DateTime?
-  opportunityQueuedAt DateTime?
-  matches ProductMatch[]
+  availability               String?
+  pageNumber                 Int?
+  imageUrl                   String?
+  imageCropData              Json?
+  rawText                    String?
+  fieldConfidence            Json?
+  extractionConfidence       Float
+  overallConfidence          Float               @default(0)
+  status                     CatalogReviewStatus @default(PENDING)
+  linkedProductId            String?
+  linkedProduct              Product?            @relation(fields: [linkedProductId], references: [id], onDelete: SetNull)
+  reviewedAt                 DateTime?
+  opportunityQueuedAt        DateTime?
+  matches                    ProductMatch[]
+
   @@index([catalogId, supplierSku])
   @@index([ean])
 }
 
 model CatalogChange {
-  id String @id @default(cuid())
-  catalogId String
-  catalog Catalog @relation("CatalogChanges", fields: [catalogId], references: [id], onDelete: Cascade)
-  previousCatalogId String?
-  previousCatalog Catalog? @relation("PreviousCatalogChanges", fields: [previousCatalogId], references: [id], onDelete: SetNull)
-  changeType CatalogChangeType
-  productKey String
-  catalogProductId String?
+  id                       String            @id @default(cuid())
+  catalogId                String
+  catalog                  Catalog           @relation("CatalogChanges", fields: [catalogId], references: [id], onDelete: Cascade)
+  previousCatalogId        String?
+  previousCatalog          Catalog?          @relation("PreviousCatalogChanges", fields: [previousCatalogId], references: [id], onDelete: SetNull)
+  changeType               CatalogChangeType
+  productKey               String
+  catalogProductId         String?
   previousCatalogProductId String?
-  beforeValue Json?
-  afterValue Json?
-  createdAt DateTime @default(now())
+  beforeValue              Json?
+  afterValue               Json?
+  createdAt                DateTime          @default(now())
+
   @@index([catalogId, changeType])
 }
 
 model ProductMatch {
-  id String @id @default(cuid())
+  id               String         @id @default(cuid())
   catalogProductId String
-  catalogProduct CatalogProduct @relation(fields: [catalogProductId], references: [id])
-  amazonAsin String
-  matchScore Float
-  matchMethod String
-  status MatchStatus
+  catalogProduct   CatalogProduct @relation(fields: [catalogProductId], references: [id])
+  amazonAsin       String
+  matchScore       Float
+  matchMethod      String
+  status           MatchStatus
 }
 
 model SupplierProductPrice {
-  id String @id @default(cuid())
+  id                String          @id @default(cuid())
   supplierProductId String
-  supplierProduct SupplierProduct @relation(fields: [supplierProductId], references: [id])
-  priceCents Int
-  unitsPerBox Int?
-  minimumQty Int?
-  catalogId String?
-  catalog Catalog? @relation(fields: [catalogId], references: [id])
-  validFrom DateTime?
-  observedAt DateTime @default(now())
+  supplierProduct   SupplierProduct @relation(fields: [supplierProductId], references: [id])
+  priceCents        Int
+  unitsPerBox       Int?
+  minimumQty        Int?
+  catalogId         String?
+  catalog           Catalog?        @relation(fields: [catalogId], references: [id])
+  validFrom         DateTime?
+  observedAt        DateTime        @default(now())
+
   @@index([supplierProductId, observedAt])
 }
 
 model DecisionLog {
-  id String @id @default(cuid())
-  userId String
-  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
-  productId String
-  product Product @relation(fields: [productId], references: [id], onDelete: Cascade)
-  decision String
-  context Json
-  createdAt DateTime @default(now())
+  id             String        @id @default(cuid())
+  userId         String
+  user           User          @relation(fields: [userId], references: [id], onDelete: Cascade)
+  organizationId String?
+  organization   Organization? @relation(fields: [organizationId], references: [id], onDelete: Restrict)
+  productId      String
+  product        Product       @relation(fields: [productId], references: [id], onDelete: Cascade)
+  decision       String
+  context        Json
+  createdAt      DateTime      @default(now())
+
+  @@index([organizationId, createdAt])
 }
 
 model Alert {
-  id String @id @default(cuid())
-  userId String
-  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
-  type String
-  severity String
-  title String
-  message String
-  readAt DateTime?
-  createdAt DateTime @default(now())
+  id             String        @id @default(cuid())
+  userId         String
+  user           User          @relation(fields: [userId], references: [id], onDelete: Cascade)
+  organizationId String?
+  organization   Organization? @relation(fields: [organizationId], references: [id], onDelete: Restrict)
+  type           String
+  severity       String
+  title          String
+  message        String
+  readAt         DateTime?
+  createdAt      DateTime      @default(now())
+
+  @@index([organizationId, createdAt])
 }

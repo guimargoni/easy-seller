@@ -63,17 +63,19 @@ async function compareCatalogVersions(catalogId: string, supplierId: string, ver
   if (changes.length) await prisma.catalogChange.createMany({ data: changes.map((change) => ({ ...change, catalogId, previousCatalogId: previous.id })) });
 }
 
-async function capitalAvailableCents(userId: string) {
+async function capitalAvailableCents(userId: string, organizationId: string) {
   const [settings, products] = await Promise.all([
     prisma.userSettings.findUniqueOrThrow({ where: { userId } }),
-    prisma.product.findMany({ where: { userId }, include: { supplierProducts: true } }),
+    prisma.product.findMany({ where: { organizationId }, include: { supplierProducts: true } }),
   ]);
   const committed = products.reduce((sum, product) => sum + product.supplierProducts.reduce((subtotal, link) => subtotal + link.costCents * (link.stock ?? 0), 0), 0);
   return { available: Math.max(0, settings.capitalTotalCents - settings.capitalReserveCents - committed), maxExposure: settings.maxTestExposureBasisPoints };
 }
 
-async function persistProducts(catalog: { id: string; supplierId: string; supplier: { userId: string } }, products: NormalizedCatalogProduct[]) {
-  const capital = await capitalAvailableCents(catalog.supplier.userId);
+async function persistProducts(catalog: { id: string; supplierId: string; supplier: { userId: string; organizationId: string | null } }, products: NormalizedCatalogProduct[]) {
+  const organizationId = catalog.supplier.organizationId;
+  if (!organizationId) throw new Error("CATALOG_TENANT_CONTEXT_MISSING");
+  const capital = await capitalAvailableCents(catalog.supplier.userId, organizationId);
   for (const item of products) {
     const exposure = item.minimumInvestmentCents != null && capital.available > 0 ? Math.round(item.minimumInvestmentCents / capital.available * 10_000) : null;
     const status = item.overallConfidence >= reviewThreshold ? "CONFIRMED" : "PENDING";
@@ -86,26 +88,27 @@ async function persistProducts(catalog: { id: string; supplierId: string; suppli
       fieldConfidence: item.fieldConfidence, extractionConfidence: item.overallConfidence, overallConfidence: item.overallConfidence, status,
     } });
     if (exposure != null && exposure > capital.maxExposure) await prisma.alert.create({ data: {
-      userId: catalog.supplier.userId, type: "CAPITAL_EXPOSURE", severity: exposure >= capital.maxExposure * 2 ? "HIGH" : "MEDIUM",
+      userId: catalog.supplier.userId, organizationId, type: "CAPITAL_EXPOSURE", severity: exposure >= capital.maxExposure * 2 ? "HIGH" : "MEDIUM",
       title: "Exposição de capital acima do limite",
       message: `${item.rawName ?? item.supplierSku ?? "Produto do catálogo"}: investimento mínimo compromete ${(exposure / 100).toFixed(2)}% do capital disponível.`,
     } });
-    if (status === "CONFIRMED") await queueOpportunity(saved.id, catalog.supplier.userId);
+    if (status === "CONFIRMED") await queueOpportunity(saved.id, catalog.supplier.userId, organizationId);
   }
 }
 
-export async function queueOpportunity(catalogProductId: string, userId: string, mergeProductId?: string) {
+export async function queueOpportunity(catalogProductId: string, userId: string, organizationId: string, mergeProductId?: string) {
   return prisma.$transaction(async (tx) => {
-    const item = await tx.catalogProduct.findUniqueOrThrow({ where: { id: catalogProductId }, include: { catalog: true } });
+    const item = await tx.catalogProduct.findFirst({ where: { id: catalogProductId, catalog: { supplier: { organizationId } } }, include: { catalog: true } });
+    if (!item) throw new Error("CATALOG_PRODUCT_NOT_FOUND");
     if (item.linkedProductId) return item.linkedProductId;
     let productId = mergeProductId;
-    if (productId && !(await tx.product.findFirst({ where: { id: productId, userId } }))) throw new Error("MERGE_PRODUCT_NOT_FOUND");
+    if (productId && !(await tx.product.findFirst({ where: { id: productId, organizationId } }))) throw new Error("MERGE_PRODUCT_NOT_FOUND");
     if (!productId) {
       if (!item.rawName) return null;
-      const existingLink = item.supplierSku ? await tx.supplierProduct.findFirst({ where: { supplierId: item.catalog.supplierId, supplierSku: item.supplierSku }, select: { productId: true } }) : null;
-      const existingEan = item.ean ? await tx.product.findFirst({ where: { userId, ean: item.ean }, select: { id: true } }) : null;
-      productId = existingLink?.productId ?? existingEan?.id ?? undefined;
-      if (!productId) productId = (await tx.product.create({ data: { userId, name: item.rawName, brand: item.brand, ean: item.ean ?? item.gtin, category: null, strategyType: "BRANDED_RESELL", status: "CANDIDATE", researchOrigin: `CATALOG:${item.catalogId}`, dataOrigin: "REAL" } })).id;
+      const existingLink = item.supplierSku ? await tx.supplierProduct.findFirst({ where: { supplierId: item.catalog.supplierId, supplierSku: item.supplierSku }, select: { productId: true, product: { select: { organizationId: true } } } }) : null;
+      const existingEan = item.ean ? await tx.product.findFirst({ where: { organizationId, ean: item.ean }, select: { id: true } }) : null;
+      productId = existingLink?.product?.organizationId === organizationId ? existingLink.productId ?? undefined : existingEan?.id ?? undefined;
+      if (!productId) productId = (await tx.product.create({ data: { userId, organizationId, name: item.rawName, brand: item.brand, ean: item.ean ?? item.gtin, category: null, strategyType: "BRANDED_RESELL", status: "CANDIDATE", researchOrigin: `CATALOG:${item.catalogId}`, dataOrigin: "REAL" } })).id;
     }
     if (item.unitPriceCents != null) {
       const link = await tx.supplierProduct.findFirst({ where: { supplierId: item.catalog.supplierId, productId } });

@@ -20,6 +20,8 @@
     "test": "npm --workspace @easy-seller/calculations test && npm --workspace @easy-seller/catalog test && npm --workspace @easy-seller/amazon test",
     "test:db": "node --import tsx scripts/db-baseline-check.mjs",
     "test:worker": "node --import tsx scripts/worker-smoke.mjs",
+    "test:tenant": "npm --workspace @easy-seller/api run test:tenant",
+    "test:tenant-migrations": "node scripts/tenant-migration-test.mjs",
     "test:baseline": "node --env-file-if-exists=.env.test scripts/run-baseline-gate.mjs",
     "db:generate": "node --env-file=.env node_modules/prisma/build/index.js generate --schema packages/db/prisma/schema.prisma",
     "db:migrate": "node --env-file=.env node_modules/prisma/build/index.js migrate deploy --schema packages/db/prisma/schema.prisma",

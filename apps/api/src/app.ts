@@ -17,7 +17,14 @@ import {
   type ResearchCandidateInput,
   type StrategyProfile,
 } from "@easy-seller/calculations";
-import { ensureLocalUser, prisma } from "@easy-seller/db";
+import { prisma } from "@easy-seller/db";
+import {
+  localTenantContextResolver,
+  recordAudit,
+  TenantContextError,
+  type TenantContext,
+  type TenantContextResolver,
+} from "./tenant-context.js";
 import {
   AmazonPageObservationAdapter,
   AmazonSpApiAdapter,
@@ -241,8 +248,8 @@ const productInclude = {
   analyses: { orderBy: { createdAt: "desc" as const }, take: 1 },
   opportunities: { orderBy: { calculatedAt: "desc" as const }, take: 1 },
 };
-async function getProductRecord(id: string) {
-  return prisma.product.findUnique({ where: { id }, include: productInclude });
+async function getProductRecord(id: string, organizationId: string) {
+  return prisma.product.findFirst({ where: { id, organizationId }, include: productInclude });
 }
 type ProductRecord = NonNullable<Awaited<ReturnType<typeof getProductRecord>>>;
 function serializeAnalysis(item: ProductRecord["analyses"][number], productName?: string) {
@@ -422,8 +429,8 @@ function productScalarData(v: z.infer<typeof productSchema>) {
   };
 }
 
-async function createAnalysis(userId: string, input: z.infer<typeof analysisSchema>) {
-  const settings = await prisma.userSettings.findUniqueOrThrow({ where: { userId } });
+async function createAnalysis(context: TenantContext, input: z.infer<typeof analysisSchema>) {
+  const settings = await prisma.userSettings.findUniqueOrThrow({ where: { userId: context.userId } });
   const financials = calculateFinancials(input);
   const scoreInput: OpportunityScoreInput = {
     monthlySales: input.monthlySales,
@@ -439,9 +446,11 @@ async function createAnalysis(userId: string, input: z.infer<typeof analysisSche
     scoreInput,
     getScoreWeights(settings.strategyProfile as StrategyProfile),
   );
-  const saved = await prisma.analysis.create({
-    data: {
-      userId,
+  const saved = await prisma.$transaction(async (tx) => {
+    const analysis = await tx.analysis.create({
+      data: {
+      userId: context.userId,
+      organizationId: context.organizationId,
       productId: input.productId,
       salePriceCents: cents(input.salePrice)!,
       productCostCents: cents(input.productCost)!,
@@ -467,7 +476,15 @@ async function createAnalysis(userId: string, input: z.infer<typeof analysisSche
       warnings: scored.warnings,
       strategyProfile: settings.strategyProfile,
       dataOrigin: input.dataOrigin,
-    },
+      },
+    });
+    await recordAudit(tx, context, {
+      action: "ANALYSIS.CREATED",
+      entityType: "Analysis",
+      entityId: analysis.id,
+      metadata: { productId: input.productId },
+    });
+    return analysis;
   });
   const available = Math.max(
     0,
@@ -490,16 +507,16 @@ async function createAnalysis(userId: string, input: z.infer<typeof analysisSche
   };
 }
 
-async function getRealAvailableCapital(userId: string) {
+async function getRealAvailableCapital(context: TenantContext) {
   const [settings, products] = await Promise.all([
-    prisma.userSettings.findUniqueOrThrow({ where: { userId } }),
-    prisma.product.findMany({ where: { userId }, include: { supplierProducts: true } }),
+    prisma.userSettings.findUniqueOrThrow({ where: { userId: context.userId } }),
+    prisma.product.findMany({ where: { organizationId: context.organizationId }, include: { supplierProducts: true } }),
   ]);
   const committed = products.reduce((sum, product) => sum + product.supplierProducts.reduce((subtotal, link) => subtotal + link.costCents * (link.stock ?? 0), 0), 0);
   return { settings, availableCents: Math.max(0, settings.capitalTotalCents - settings.capitalReserveCents - committed) };
 }
 
-export async function buildApp() {
+export async function buildApp(options: { tenantContextResolver?: TenantContextResolver } = {}) {
   const app = Fastify({ logger: true });
   await app.register(cors, {
     origin: process.env.WEB_ORIGIN ?? "http://localhost:3000",
@@ -508,8 +525,11 @@ export async function buildApp() {
     credentials: false,
   });
   await app.register(multipart, { limits: { fileSize: catalogMaxUploadBytes, files: 1 } });
-  const user = await ensureLocalUser();
-  if (!user.settings) await prisma.userSettings.create({ data: { userId: user.id } });
+  const resolveTenantContext = options.tenantContextResolver ?? localTenantContextResolver;
+  app.addHook("preHandler", async (request) => {
+    if (request.routeOptions.url === "/health") return;
+    request.tenant = await resolveTenantContext(request);
+  });
   app.get("/health", async (_req, reply) => {
     try {
       await prisma.$queryRaw`SELECT 1`;
@@ -518,8 +538,8 @@ export async function buildApp() {
       return reply.code(503).send({ status: "error", database: "disconnected" });
     }
   });
-  app.get("/settings", async () =>
-    serializeSettings(await prisma.userSettings.findUniqueOrThrow({ where: { userId: user.id } })),
+  app.get("/settings", async (req) =>
+    serializeSettings(await prisma.userSettings.findUniqueOrThrow({ where: { userId: req.tenant.userId } })),
   );
   app.put("/settings", async (req, reply) => {
     const p = settingsSchema.safeParse(req.body);
@@ -538,13 +558,19 @@ export async function buildApp() {
       strategyProfile: v.strategyProfile,
       simpleMode: v.simpleMode,
     };
-    return serializeSettings(
-      await prisma.userSettings.upsert({
-        where: { userId: user.id },
-        create: { userId: user.id, ...data },
+    return serializeSettings(await prisma.$transaction(async (tx) => {
+      const settings = await tx.userSettings.upsert({
+        where: { userId: req.tenant.userId },
+        create: { userId: req.tenant.userId, ...data },
         update: data,
-      }),
-    );
+      });
+      await recordAudit(tx, req.tenant, {
+        action: "SETTINGS.UPDATED",
+        entityType: "UserSettings",
+        entityId: settings.id,
+      });
+      return settings;
+    }));
   });
 
   const catalogInclude = {
@@ -571,8 +597,8 @@ export async function buildApp() {
     import: item.imports?.[0] ? { id: item.imports[0].id, status: item.imports[0].status, progressPercent: item.imports[0].progressPercent, error: item.imports[0].error, extractionMethod: item.imports[0].extractionMethod } : null,
     products: item.products?.map(serializeCatalogProduct) ?? [], changes: item.changes ?? [],
   });
-  async function createCatalog(data: { supplierId: string; name: string; sourceType: z.infer<typeof catalogSourceSchema>; sourceFile?: string; sourceUrl?: string; catalogDate?: string; sourceFilename?: string; sourceMimeType?: string; sourceSizeBytes?: number; sourceSha256?: string }) {
-    const supplier = await prisma.supplier.findFirst({ where: { id: data.supplierId, userId: user.id } });
+  async function createCatalog(context: TenantContext, data: { supplierId: string; name: string; sourceType: z.infer<typeof catalogSourceSchema>; sourceFile?: string; sourceUrl?: string; catalogDate?: string; sourceFilename?: string; sourceMimeType?: string; sourceSizeBytes?: number; sourceSha256?: string }) {
+    const supplier = await prisma.supplier.findFirst({ where: { id: data.supplierId, organizationId: context.organizationId } });
     if (!supplier) throw new Error("SUPPLIER_NOT_FOUND");
     return prisma.$transaction(async (tx) => {
       const latest = await tx.catalog.findFirst({ where: { supplierId: data.supplierId }, orderBy: { version: "desc" }, select: { version: true } });
@@ -584,9 +610,9 @@ export async function buildApp() {
       }, include: catalogInclude });
     });
   }
-  app.get("/catalogs", async () => (await prisma.catalog.findMany({ where: { supplier: { userId: user.id } }, include: catalogInclude, orderBy: { importedAt: "desc" } })).map(serializeCatalog));
+  app.get("/catalogs", async (req) => (await prisma.catalog.findMany({ where: { supplier: { organizationId: req.tenant.organizationId } }, include: catalogInclude, orderBy: { importedAt: "desc" } })).map(serializeCatalog));
   app.get("/catalogs/:id", async (req, reply) => {
-    const item = await prisma.catalog.findFirst({ where: { id: (req.params as { id: string }).id, supplier: { userId: user.id } }, include: catalogInclude });
+    const item = await prisma.catalog.findFirst({ where: { id: (req.params as { id: string }).id, supplier: { organizationId: req.tenant.organizationId } }, include: catalogInclude });
     return item ? serializeCatalog(item) : reply.code(404).send({ error: "NOT_FOUND" });
   });
   app.post("/catalogs/upload", async (req, reply) => {
@@ -606,7 +632,7 @@ export async function buildApp() {
     const storedPath = resolve(storage, `${randomUUID()}.${extension}`);
     await writeFile(storedPath, file.buffer);
     try {
-      const catalog = await createCatalog({ ...parsed.data, sourceType, sourceFile: storedPath, sourceFilename: file.filename, sourceMimeType: file.mimetype, sourceSizeBytes: file.buffer.length, sourceSha256: sha256(file.buffer) });
+      const catalog = await createCatalog(req.tenant, { ...parsed.data, sourceType, sourceFile: storedPath, sourceFilename: file.filename, sourceMimeType: file.mimetype, sourceSizeBytes: file.buffer.length, sourceSha256: sha256(file.buffer) });
       await prisma.supplier.update({ where: { id: parsed.data.supplierId }, data: { hasCatalog: true } });
       return reply.code(202).send(serializeCatalog(catalog));
     } catch (error) {
@@ -620,13 +646,13 @@ export async function buildApp() {
     const buffer = Buffer.from(JSON.stringify(parsed.data.products.map((values) => ({ values, baseConfidence: 1, extractionMethod: "MANUAL" }))));
     const storage = resolve(process.env.CATALOG_STORAGE_DIR ?? ".runtime/catalogs"); await mkdir(storage, { recursive: true });
     const storedPath = resolve(storage, `${randomUUID()}.json`); await writeFile(storedPath, buffer);
-    const catalog = await createCatalog({ ...parsed.data, sourceType: "MANUAL", sourceFile: storedPath, sourceFilename: `${parsed.data.name}.json`, sourceMimeType: "application/json", sourceSizeBytes: buffer.length, sourceSha256: sha256(buffer) });
+    const catalog = await createCatalog(req.tenant, { ...parsed.data, sourceType: "MANUAL", sourceFile: storedPath, sourceFilename: `${parsed.data.name}.json`, sourceMimeType: "application/json", sourceSizeBytes: buffer.length, sourceSha256: sha256(buffer) });
     return reply.code(202).send(serializeCatalog(catalog));
   });
   app.post("/catalogs/reference", async (req, reply) => {
     const parsed = z.object({ supplierId: z.string().min(1), name: z.string().trim().min(2), sourceUrl: z.string().url(), catalogDate: z.string().optional() }).safeParse(req.body);
     if (!parsed.success) return reply.code(400).send({ error: "INVALID_CATALOG_REFERENCE", issues: parsed.error.issues });
-    const catalog = await createCatalog({ ...parsed.data, sourceType: "EXTERNAL_URL" });
+    const catalog = await createCatalog(req.tenant, { ...parsed.data, sourceType: "EXTERNAL_URL" });
     await prisma.catalog.update({ where: { id: catalog.id }, data: { status: "NEEDS_REVIEW" } });
     await prisma.catalogImport.update({ where: { id: catalog.imports[0].id }, data: { status: "NEEDS_REVIEW", progressPercent: 100, finishedAt: new Date(), metadata: { note: "URL mantida somente como referência; nenhum conteúdo externo foi presumido." } } });
     return reply.code(201).send(serializeCatalog(await prisma.catalog.findUniqueOrThrow({ where: { id: catalog.id }, include: catalogInclude })));
@@ -635,7 +661,7 @@ export async function buildApp() {
     const id = (req.params as { id: string }).id;
     const parsed = z.object({ action: z.enum(["CONFIRM", "EDIT", "IGNORE", "MERGE"]), mergeProductId: z.string().optional(), values: manualCatalogProductSchema.optional() }).safeParse(req.body);
     if (!parsed.success) return reply.code(400).send({ error: "INVALID_REVIEW", issues: parsed.error.issues });
-    const item = await prisma.catalogProduct.findFirst({ where: { id, catalog: { supplier: { userId: user.id } } }, include: { catalog: true } });
+    const item = await prisma.catalogProduct.findFirst({ where: { id, catalog: { supplier: { organizationId: req.tenant.organizationId } } }, include: { catalog: true } });
     if (!item) return reply.code(404).send({ error: "NOT_FOUND" });
     if (parsed.data.action === "IGNORE") await prisma.catalogProduct.update({ where: { id }, data: { status: "IGNORED", reviewedAt: new Date() } });
     else {
@@ -644,14 +670,14 @@ export async function buildApp() {
         const v = parsed.data.values;
         const quantity = v.minimumUnits ?? (v.minimumBoxes && v.unitsPerBox ? v.minimumBoxes * v.unitsPerBox : null);
         const investment = v.unitPrice != null && quantity != null ? cents(v.unitPrice)! * quantity : null;
-        const capital = await getRealAvailableCapital(user.id);
+        const capital = await getRealAvailableCapital(req.tenant);
         const exposure = investment != null && capital.availableCents > 0 ? Math.round(investment / capital.availableCents * 10_000) : null;
         await prisma.catalogProduct.update({ where: { id }, data: { supplierSku: v.supplierSku, ean: v.ean, gtin: v.gtin, rawName: v.name, normalizedName: v.name?.toLowerCase() ?? null, brand: v.brand, model: v.model, variant: v.variant, unitPriceCents: cents(v.unitPrice), unitsPerBox: v.unitsPerBox, minimumBoxes: v.minimumBoxes, minimumUnits: v.minimumUnits, minimumInvestmentCents: investment, capitalExposureBasisPoints: exposure, availability: v.availability, fieldConfidence: Object.fromEntries(Object.entries(v).filter(([, value]) => value != null).map(([key]) => [key, 1])), overallConfidence: 1 } });
-        if (exposure != null && exposure > capital.settings.maxTestExposureBasisPoints) await prisma.alert.create({ data: { userId: user.id, type: "CAPITAL_EXPOSURE", severity: exposure >= capital.settings.maxTestExposureBasisPoints * 2 ? "HIGH" : "MEDIUM", title: "Exposição de capital acima do limite", message: `${v.name ?? v.supplierSku ?? "Produto do catálogo"}: investimento mínimo compromete ${(exposure / 100).toFixed(2)}% do capital disponível.` } });
+        if (exposure != null && exposure > capital.settings.maxTestExposureBasisPoints) await prisma.alert.create({ data: { userId: req.tenant.userId, organizationId: req.tenant.organizationId, type: "CAPITAL_EXPOSURE", severity: exposure >= capital.settings.maxTestExposureBasisPoints * 2 ? "HIGH" : "MEDIUM", title: "Exposição de capital acima do limite", message: `${v.name ?? v.supplierSku ?? "Produto do catálogo"}: investimento mínimo compromete ${(exposure / 100).toFixed(2)}% do capital disponível.` } });
       }
       if (parsed.data.action === "MERGE" && !parsed.data.mergeProductId) return reply.code(400).send({ error: "MERGE_PRODUCT_REQUIRED" });
       await prisma.catalogProduct.update({ where: { id }, data: { status: parsed.data.action === "MERGE" ? "MERGED" : "CONFIRMED", reviewedAt: new Date() } });
-      try { await queueOpportunity(id, user.id, parsed.data.mergeProductId); } catch (error) { if (error instanceof Error && error.message === "MERGE_PRODUCT_NOT_FOUND") return reply.code(404).send({ error: error.message }); throw error; }
+      try { await queueOpportunity(id, req.tenant.userId, req.tenant.organizationId, parsed.data.mergeProductId); } catch (error) { if (error instanceof Error && error.message === "MERGE_PRODUCT_NOT_FOUND") return reply.code(404).send({ error: error.message }); throw error; }
     }
     const counts = await prisma.catalogProduct.groupBy({ by: ["status"], where: { catalogId: item.catalogId }, _count: true });
     const pending = counts.find((count) => count.status === "PENDING")?._count ?? 0;
@@ -660,23 +686,23 @@ export async function buildApp() {
     return serializeCatalogProduct(await prisma.catalogProduct.findUniqueOrThrow({ where: { id } }));
   });
   app.get("/supplier-products/:id/prices", async (req, reply) => {
-    const link = await prisma.supplierProduct.findFirst({ where: { id: (req.params as { id: string }).id, supplier: { userId: user.id } }, include: { priceHistory: { orderBy: { observedAt: "desc" }, include: { catalog: true } } } });
+    const link = await prisma.supplierProduct.findFirst({ where: { id: (req.params as { id: string }).id, supplier: { organizationId: req.tenant.organizationId } }, include: { priceHistory: { orderBy: { observedAt: "desc" }, include: { catalog: true } } } });
     if (!link) return reply.code(404).send({ error: "NOT_FOUND" });
     return link.priceHistory.map((price) => ({ price: money(price.priceCents), unitsPerBox: price.unitsPerBox, minimumQty: price.minimumQty, observedAt: price.observedAt.toISOString(), catalogId: price.catalogId, catalogVersion: price.catalog?.version ?? null }));
   });
-  app.get("/catalog-opportunities", async () => {
-    const rows = await prisma.catalogProduct.findMany({ where: { catalog: { supplier: { userId: user.id } }, status: { in: ["CONFIRMED", "MERGED"] }, linkedProductId: { not: null }, availability: { not: "OUT_OF_STOCK" } }, include: { catalog: { include: { supplier: true } }, linkedProduct: true }, orderBy: [{ capitalExposureBasisPoints: "asc" }, { overallConfidence: "desc" }] });
+  app.get("/catalog-opportunities", async (req) => {
+    const rows = await prisma.catalogProduct.findMany({ where: { catalog: { supplier: { organizationId: req.tenant.organizationId } }, status: { in: ["CONFIRMED", "MERGED"] }, linkedProductId: { not: null }, availability: { not: "OUT_OF_STOCK" } }, include: { catalog: { include: { supplier: true } }, linkedProduct: true }, orderBy: [{ capitalExposureBasisPoints: "asc" }, { overallConfidence: "desc" }] });
     return rows.map((item, index) => ({ rank: index + 1, catalogProduct: serializeCatalogProduct(item), productId: item.linkedProductId, supplierName: item.catalog.supplier.name, catalogVersion: item.catalog.version, amazonDataStatus: "NOT_FETCHED", shortlistReason: item.capitalExposureBasisPoints == null ? "Dados validados; exposição depende de quantidade mínima e preço." : `Exposição de ${percent(item.capitalExposureBasisPoints).toFixed(2)}% do capital disponível.` }));
   });
-  app.get("/alerts", async () => prisma.alert.findMany({ where: { userId: user.id }, orderBy: { createdAt: "desc" }, take: 100 }));
+  app.get("/alerts", async (req) => prisma.alert.findMany({ where: { organizationId: req.tenant.organizationId }, orderBy: { createdAt: "desc" }, take: 100 }));
   app.post("/amazon/intelligence", async (req, reply) => {
     const parsed = amazonIntelligenceSchema.safeParse(req.body);
     if (!parsed.success) return reply.code(400).send({ error: "INVALID_AMAZON_INTELLIGENCE_REQUEST", issues: parsed.error.issues });
     const input = parsed.data;
     const intelligence = await collectAmazonIntelligence(input.asin, { asin: input.asin, ...input.page }, input.page?.price);
-    const listingRecord = await prisma.amazonListing.findFirst({ where: { asin: input.asin, product: { userId: user.id } }, include: { product: { include: { analyses: { orderBy: { createdAt: "desc" }, take: 1 } } }, priceSnapshots: { orderBy: { timestamp: "desc" }, take: 1 }, competitionSnapshots: { orderBy: { timestamp: "desc" }, take: 1 } } });
+    const listingRecord = await prisma.amazonListing.findFirst({ where: { asin: input.asin, product: { organizationId: req.tenant.organizationId } }, include: { product: { include: { analyses: { where: { organizationId: req.tenant.organizationId }, orderBy: { createdAt: "desc" }, take: 1 } } }, priceSnapshots: { orderBy: { timestamp: "desc" }, take: 1 }, competitionSnapshots: { orderBy: { timestamp: "desc" }, take: 1 } } });
     const title = intelligence.catalog?.title.value ?? input.page?.title ?? `Produto Amazon ${input.asin}`;
-    const listing = listingRecord ?? await prisma.amazonListing.create({ data: { asin: input.asin, origin: intelligence.catalog?.title.origin ?? intelligence.pricing?.price.origin ?? "INFERRED", product: { create: { userId: user.id, name: title, category: intelligence.rank?.category.value ?? "Não informada", status: "RESEARCHING", strategyType: "BRANDED_RESELL", dataOrigin: intelligence.catalog?.title.origin ?? "INFERRED" } } }, include: { product: { include: { analyses: { orderBy: { createdAt: "desc" }, take: 1 } } }, priceSnapshots: { take: 0 }, competitionSnapshots: { take: 0 } } });
+    const listing = listingRecord ?? await prisma.amazonListing.create({ data: { asin: input.asin, origin: intelligence.catalog?.title.origin ?? intelligence.pricing?.price.origin ?? "INFERRED", product: { create: { userId: req.tenant.userId, organizationId: req.tenant.organizationId, name: title, category: intelligence.rank?.category.value ?? "Não informada", status: "RESEARCHING", strategyType: "BRANDED_RESELL", dataOrigin: intelligence.catalog?.title.origin ?? "INFERRED" } } }, include: { product: { include: { analyses: { where: { organizationId: req.tenant.organizationId }, orderBy: { createdAt: "desc" }, take: 1 } } }, priceSnapshots: { take: 0 }, competitionSnapshots: { take: 0 } } });
     const alerts: Array<{ type: string; severity: string; title: string; message: string }> = [];
     const previousPrice = listingRecord?.priceSnapshots[0];
     const previousCompetition = listingRecord?.competitionSnapshots[0];
@@ -705,14 +731,14 @@ export async function buildApp() {
     if (salePrice > 0 && intelligence.fees) {
       const financials = calculateFinancials({ salePrice, productCost: input.productCost, inboundShipping: input.inboundShipping, packaging: input.packaging, taxRate: input.taxRate, amazonCommission: intelligence.fees.commission.value, amazonLogistics: intelligence.fees.logistics.value, advertising: input.advertising, quantity: input.quantity, targetMarginRate: 0.15 });
       const scoreInput = { monthlySales: intelligence.monthlySales?.value ?? 0, netMarginPercent: financials.netMarginPercent, roiPercent: financials.roiPercent, priceStability: 50, sellerCount: intelligence.competition?.sellerCount.value ?? 0, demandStability: intelligence.rank ? 50 : 0, amazonIsSeller: intelligence.competition?.amazonIsSeller.value ?? false, inventoryRisk: intelligence.rank ? 40 : 60 };
-      const settings = await prisma.userSettings.findUniqueOrThrow({ where: { userId: user.id } });
+      const settings = await prisma.userSettings.findUniqueOrThrow({ where: { userId: req.tenant.userId } });
       const score = calculateOpportunityScore(scoreInput, getScoreWeights(settings.strategyProfile as StrategyProfile));
       const available = Math.max(0, money(settings.capitalTotalCents)! - money(settings.capitalReserveCents)!);
       decision = { ...financials, ...score, recommendedQuantity: calculateRecommendedQuantity({ monthlySalesEstimate: scoreInput.monthlySales, sellerCount: scoreInput.sellerCount, score: score.score, capitalAvailable: available, unitCost: input.productCost, riskLevel: scoreInput.inventoryRisk >= 70 ? "HIGH" : scoreInput.inventoryRisk >= 40 ? "MEDIUM" : "LOW", maxExposurePercent: percent(settings.maxTestExposureBasisPoints) }), origin: "INFERRED", confidence: intelligence.rank ? "MEDIUM" : "LOW", source: "EASY_SELLER_CALCULATION_V1" };
       const previousMargin = listing.product.analyses[0]?.marginBasisPoints;
       if (previousMargin != null && financials.netMarginPercent < previousMargin / 100 - 2) alerts.push({ type: "AMAZON_MARGIN_DOWN", severity: "HIGH", title: "Margem caiu", message: `${input.asin}: margem caiu de ${(previousMargin / 100).toFixed(2)}% para ${financials.netMarginPercent.toFixed(2)}%.` });
     }
-    if (alerts.length) await prisma.alert.createMany({ data: alerts.map((alert) => ({ ...alert, userId: user.id })) });
+    if (alerts.length) await prisma.alert.createMany({ data: alerts.map((alert) => ({ ...alert, userId: req.tenant.userId, organizationId: req.tenant.organizationId })) });
     const monthlySalesHistory = await loadMonthlySalesHistory(listing.id);
     return { ...intelligence, monthlySalesHistory, decision, changes: alerts };
   });
@@ -720,9 +746,9 @@ export async function buildApp() {
     const asin = (req.params as { asin: string }).asin.toUpperCase();
     if (!/^[A-Z0-9]{10}$/.test(asin)) return reply.code(400).send({ error: "INVALID_ASIN" });
     const listing = await prisma.amazonListing.findFirst({
-      where: { asin, product: { userId: user.id } },
+      where: { asin, product: { organizationId: req.tenant.organizationId } },
       include: {
-        product: { include: { analyses: { orderBy: { createdAt: "desc" }, take: 1 } } },
+        product: { include: { analyses: { where: { organizationId: req.tenant.organizationId }, orderBy: { createdAt: "desc" }, take: 1 } } },
         priceSnapshots: { orderBy: { timestamp: "desc" }, take: 90 },
         rankSnapshots: { where: { timestamp: { gte: monthlySalesHistoryStart() } }, orderBy: { timestamp: "desc" } },
         competitionSnapshots: { orderBy: { timestamp: "desc" }, take: 90 },
@@ -739,18 +765,18 @@ export async function buildApp() {
       competitionSnapshots: listing.competitionSnapshots.map((value) => ({ sellerCount: value.sellerCount, fbaSellerCount: value.fbaSellerCount, amazonIsSeller: value.amazonIsSeller, origin: value.origin, confidence: value.confidence, source: value.source, amazonOrigin: value.amazonOrigin, amazonConfidence: value.amazonConfidence, amazonSource: value.amazonSource, observedAt: value.timestamp.toISOString() })),
     };
   });
-  app.get("/products", async () =>
+  app.get("/products", async (req) =>
     (
       await prisma.product.findMany({
-        where: { userId: user.id },
+        where: { organizationId: req.tenant.organizationId },
         include: productInclude,
         orderBy: { updatedAt: "desc" },
       })
     ).map(serializeProduct),
   );
   app.get("/products/:id", async (req, reply) => {
-    const item = await getProductRecord((req.params as { id: string }).id);
-    if (!item || item.userId !== user.id) return reply.code(404).send({ error: "NOT_FOUND" });
+    const item = await getProductRecord((req.params as { id: string }).id, req.tenant.organizationId);
+    if (!item) return reply.code(404).send({ error: "NOT_FOUND" });
     return serializeProduct(item);
   });
   app.post("/products", async (req, reply) => {
@@ -761,9 +787,13 @@ export async function buildApp() {
     const readyError = validateReadyToBuy(v);
     if (readyError)
       return reply.code(409).send({ error: "READY_TO_BUY_BLOCKED", message: readyError });
-    const item = await prisma.product.create({
-      data: {
-        userId: user.id,
+    if (v.supplierId && !(await prisma.supplier.findFirst({ where: { id: v.supplierId, organizationId: req.tenant.organizationId } })))
+      return reply.code(404).send({ error: "SUPPLIER_NOT_FOUND" });
+    const item = await prisma.$transaction(async (tx) => {
+      const product = await tx.product.create({
+        data: {
+        userId: req.tenant.userId,
+        organizationId: req.tenant.organizationId,
         ...productScalarData(v),
         listings: v.asin
           ? { create: { asin: v.asin, url: v.amazonUrl ?? null, origin: v.dataOrigin } }
@@ -780,14 +810,22 @@ export async function buildApp() {
                 },
               }
             : undefined,
-      },
-      include: productInclude,
+        },
+        include: productInclude,
+      });
+      await recordAudit(tx, req.tenant, {
+        action: "PRODUCT.CREATED",
+        entityType: "Product",
+        entityId: product.id,
+        metadata: { status: product.status },
+      });
+      return product;
     });
     return reply.code(201).send(serializeProduct(item));
   });
   app.put("/products/:id", async (req, reply) => {
     const id = (req.params as { id: string }).id;
-    if (!(await prisma.product.findFirst({ where: { id, userId: user.id } })))
+    if (!(await prisma.product.findFirst({ where: { id, organizationId: req.tenant.organizationId } })))
       return reply.code(404).send({ error: "NOT_FOUND" });
     const p = productSchema.safeParse(req.body);
     if (!p.success)
@@ -796,6 +834,8 @@ export async function buildApp() {
     const readyError = validateReadyToBuy(v);
     if (readyError)
       return reply.code(409).send({ error: "READY_TO_BUY_BLOCKED", message: readyError });
+    if (v.supplierId && !(await prisma.supplier.findFirst({ where: { id: v.supplierId, organizationId: req.tenant.organizationId } })))
+      return reply.code(404).send({ error: "SUPPLIER_NOT_FOUND" });
     await prisma.$transaction(async (tx) => {
       await tx.product.update({ where: { id }, data: productScalarData(v) });
       await tx.amazonListing.deleteMany({ where: { productId: id } });
@@ -819,12 +859,27 @@ export async function buildApp() {
             data: { ...data, productId: id, supplierId: v.supplierId },
           });
       }
+      await recordAudit(tx, req.tenant, {
+        action: "PRODUCT.UPDATED",
+        entityType: "Product",
+        entityId: id,
+        metadata: { status: v.status },
+      });
     });
-    return serializeProduct((await getProductRecord(id))!);
+    return serializeProduct((await getProductRecord(id, req.tenant.organizationId))!);
   });
   app.delete("/products/:id", async (req, reply) => {
-    const result = await prisma.product.deleteMany({
-      where: { id: (req.params as { id: string }).id, userId: user.id },
+    const id = (req.params as { id: string }).id;
+    const result = await prisma.$transaction(async (tx) => {
+      const deleted = await tx.product.deleteMany({
+        where: { id, organizationId: req.tenant.organizationId },
+      });
+      if (deleted.count) await recordAudit(tx, req.tenant, {
+        action: "PRODUCT.DELETED",
+        entityType: "Product",
+        entityId: id,
+      });
+      return deleted;
     });
     return result.count ? reply.code(204).send() : reply.code(404).send({ error: "NOT_FOUND" });
   });
@@ -840,8 +895,8 @@ export async function buildApp() {
     if (!p.success) return reply.code(400).send({ error: "INVALID_LINK", issues: p.error.issues });
     const productId = (req.params as { id: string }).id;
     const [product, supplier] = await Promise.all([
-      prisma.product.findFirst({ where: { id: productId, userId: user.id } }),
-      prisma.supplier.findFirst({ where: { id: p.data.supplierId, userId: user.id } }),
+      prisma.product.findFirst({ where: { id: productId, organizationId: req.tenant.organizationId } }),
+      prisma.supplier.findFirst({ where: { id: p.data.supplierId, organizationId: req.tenant.organizationId } }),
     ]);
     if (!product || !supplier) return reply.code(404).send({ error: "NOT_FOUND" });
     const existing = await prisma.supplierProduct.findFirst({
@@ -853,17 +908,26 @@ export async function buildApp() {
       stock: p.data.stock ?? null,
       minimumQty: p.data.minimumQty ?? null,
     };
-    const link = existing
-      ? await prisma.supplierProduct.update({ where: { id: existing.id }, data })
-      : await prisma.supplierProduct.create({
-          data: { ...data, productId, supplierId: supplier.id },
-        });
+    const link = await prisma.$transaction(async (tx) => {
+      const saved = existing
+        ? await tx.supplierProduct.update({ where: { id: existing.id }, data })
+        : await tx.supplierProduct.create({
+            data: { ...data, productId, supplierId: supplier.id },
+          });
+      await recordAudit(tx, req.tenant, {
+        action: existing ? "PRODUCT.SUPPLIER_UPDATED" : "PRODUCT.SUPPLIER_LINKED",
+        entityType: "Product",
+        entityId: productId,
+        metadata: { supplierId: supplier.id },
+      });
+      return saved;
+    });
     return reply.code(existing ? 200 : 201).send(link);
   });
-  app.get("/suppliers", async () =>
+  app.get("/suppliers", async (req) =>
     (
       await prisma.supplier.findMany({
-        where: { userId: user.id },
+        where: { organizationId: req.tenant.organizationId },
         include: { _count: { select: { products: true } } },
         orderBy: { name: "asc" },
       })
@@ -871,7 +935,7 @@ export async function buildApp() {
   );
   app.get("/suppliers/:id", async (req, reply) => {
     const item = await prisma.supplier.findFirst({
-      where: { id: (req.params as { id: string }).id, userId: user.id },
+      where: { id: (req.params as { id: string }).id, organizationId: req.tenant.organizationId },
       include: { _count: { select: { products: true } } },
     });
     return item ? serializeSupplier(item) : reply.code(404).send({ error: "NOT_FOUND" });
@@ -881,9 +945,11 @@ export async function buildApp() {
     if (!p.success)
       return reply.code(400).send({ error: "INVALID_SUPPLIER", issues: p.error.issues });
     const v = p.data;
-    const item = await prisma.supplier.create({
-      data: {
-        userId: user.id,
+    const item = await prisma.$transaction(async (tx) => {
+      const supplier = await tx.supplier.create({
+        data: {
+        userId: req.tenant.userId,
+        organizationId: req.tenant.organizationId,
         name: v.name,
         legalName: v.legalName ?? null,
         cnpj: v.cnpj ?? null,
@@ -898,20 +964,27 @@ export async function buildApp() {
         minimumOrderCents: cents(v.minimumOrder),
         issuesInvoice: v.issuesInvoice,
         hasCatalog: v.hasCatalog,
-      },
+        },
+      });
+      await recordAudit(tx, req.tenant, {
+        action: "SUPPLIER.CREATED",
+        entityType: "Supplier",
+        entityId: supplier.id,
+      });
+      return supplier;
     });
     return reply.code(201).send(serializeSupplier(item));
   });
   app.put("/suppliers/:id", async (req, reply) => {
     const id = (req.params as { id: string }).id;
-    if (!(await prisma.supplier.findFirst({ where: { id, userId: user.id } })))
+    if (!(await prisma.supplier.findFirst({ where: { id, organizationId: req.tenant.organizationId } })))
       return reply.code(404).send({ error: "NOT_FOUND" });
     const p = supplierSchema.safeParse(req.body);
     if (!p.success)
       return reply.code(400).send({ error: "INVALID_SUPPLIER", issues: p.error.issues });
     const v = p.data;
-    return serializeSupplier(
-      await prisma.supplier.update({
+    return serializeSupplier(await prisma.$transaction(async (tx) => {
+      const supplier = await tx.supplier.update({
         where: { id },
         data: {
           name: v.name,
@@ -929,12 +1002,27 @@ export async function buildApp() {
           issuesInvoice: v.issuesInvoice,
           hasCatalog: v.hasCatalog,
         },
-      }),
-    );
+      });
+      await recordAudit(tx, req.tenant, {
+        action: "SUPPLIER.UPDATED",
+        entityType: "Supplier",
+        entityId: id,
+      });
+      return supplier;
+    }));
   });
   app.delete("/suppliers/:id", async (req, reply) => {
-    const result = await prisma.supplier.deleteMany({
-      where: { id: (req.params as { id: string }).id, userId: user.id },
+    const id = (req.params as { id: string }).id;
+    const result = await prisma.$transaction(async (tx) => {
+      const deleted = await tx.supplier.deleteMany({
+        where: { id, organizationId: req.tenant.organizationId },
+      });
+      if (deleted.count) await recordAudit(tx, req.tenant, {
+        action: "SUPPLIER.DELETED",
+        entityType: "Supplier",
+        entityId: id,
+      });
+      return deleted;
     });
     return result.count ? reply.code(204).send() : reply.code(404).send({ error: "NOT_FOUND" });
   });
@@ -942,7 +1030,7 @@ export async function buildApp() {
     const p = analysisSchema.omit({ productId: true, dataOrigin: true }).safeParse(req.body);
     if (!p.success)
       return reply.code(400).send({ error: "INVALID_CALCULATION", issues: p.error.issues });
-    const settings = await prisma.userSettings.findUniqueOrThrow({ where: { userId: user.id } });
+    const settings = await prisma.userSettings.findUniqueOrThrow({ where: { userId: req.tenant.userId } });
     const financials = calculateFinancials(p.data);
     const scoreInput = {
       monthlySales: p.data.monthlySales,
@@ -962,9 +1050,9 @@ export async function buildApp() {
       ),
     };
   });
-  app.get("/analyses", async () => {
+  app.get("/analyses", async (req) => {
     const rows = await prisma.analysis.findMany({
-      where: { userId: user.id },
+      where: { organizationId: req.tenant.organizationId },
       include: { product: true },
       orderBy: { createdAt: "desc" },
     });
@@ -974,9 +1062,9 @@ export async function buildApp() {
     const p = analysisSchema.safeParse(req.body);
     if (!p.success)
       return reply.code(400).send({ error: "INVALID_ANALYSIS", issues: p.error.issues });
-    if (!(await prisma.product.findFirst({ where: { id: p.data.productId, userId: user.id } })))
+    if (!(await prisma.product.findFirst({ where: { id: p.data.productId, organizationId: req.tenant.organizationId } })))
       return reply.code(404).send({ error: "PRODUCT_NOT_FOUND" });
-    return reply.code(201).send(await createAnalysis(user.id, p.data));
+    return reply.code(201).send(await createAnalysis(req.tenant, p.data));
   });
   app.post("/extension/analyses", async (req, reply) => {
     const schema = analysisSchema
@@ -989,14 +1077,15 @@ export async function buildApp() {
     if (!p.success)
       return reply.code(400).send({ error: "INVALID_EXTENSION_ANALYSIS", issues: p.error.issues });
     const listing = await prisma.amazonListing.findFirst({
-      where: { asin: p.data.asin, product: { userId: user.id } },
+      where: { asin: p.data.asin, product: { organizationId: req.tenant.organizationId } },
       include: { product: true },
     });
     const product =
       listing?.product ??
       (await prisma.product.create({
         data: {
-          userId: user.id,
+          userId: req.tenant.userId,
+          organizationId: req.tenant.organizationId,
           name: p.data.productName,
           category: "Não informada",
           strategyType: "BRANDED_RESELL",
@@ -1008,13 +1097,13 @@ export async function buildApp() {
       }));
     return reply
       .code(201)
-      .send(await createAnalysis(user.id, { ...p.data, productId: product.id }));
+      .send(await createAnalysis(req.tenant, { ...p.data, productId: product.id }));
   });
-  app.get("/research/candidates", async () => {
+  app.get("/research/candidates", async (req) => {
     const [settings, rows] = await Promise.all([
-      prisma.userSettings.findUniqueOrThrow({ where: { userId: user.id } }),
+      prisma.userSettings.findUniqueOrThrow({ where: { userId: req.tenant.userId } }),
       prisma.product.findMany({
-        where: { userId: user.id, status: { not: "DISCARDED" } },
+        where: { organizationId: req.tenant.organizationId, status: { not: "DISCARDED" } },
         include: productInclude,
         orderBy: { updatedAt: "desc" },
       }),
@@ -1055,12 +1144,12 @@ export async function buildApp() {
       candidate: serialized.find((product) => product.id === item.candidate.id)!,
     }));
   });
-  app.get("/dashboard", async () => {
+  app.get("/dashboard", async (req) => {
     const [settings, products, analyses, current] = await Promise.all([
-      prisma.userSettings.findUniqueOrThrow({ where: { userId: user.id } }),
-      prisma.product.findMany({ where: { userId: user.id }, include: { supplierProducts: true } }),
-      prisma.analysis.findMany({ where: { userId: user.id }, orderBy: { createdAt: "desc" } }),
-      prisma.user.findUniqueOrThrow({ where: { id: user.id } }),
+      prisma.userSettings.findUniqueOrThrow({ where: { userId: req.tenant.userId } }),
+      prisma.product.findMany({ where: { organizationId: req.tenant.organizationId }, include: { supplierProducts: true } }),
+      prisma.analysis.findMany({ where: { organizationId: req.tenant.organizationId }, orderBy: { createdAt: "desc" } }),
+      prisma.user.findUniqueOrThrow({ where: { id: req.tenant.userId } }),
     ]);
     const committed =
       products.reduce(
@@ -1095,6 +1184,9 @@ export async function buildApp() {
   });
   app.setErrorHandler((error, _req, reply) => {
     app.log.error(error);
+    if (error instanceof TenantContextError) {
+      return reply.code(error.statusCode).send({ error: error.code });
+    }
     if (error && typeof error === "object" && "code" in error && error.code === "FST_REQ_FILE_TOO_LARGE") {
       return reply.code(413).send({
         error: "CATALOG_FILE_TOO_LARGE",

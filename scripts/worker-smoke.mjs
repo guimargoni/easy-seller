@@ -75,7 +75,8 @@ async function stopWorker(child) {
 
 try {
   const user = await ensureLocalUser();
-  const supplier = await prisma.supplier.create({ data: { userId: user.id, name: marker } });
+  const membership = await prisma.membership.findFirstOrThrow({ where: { userId: user.id } });
+  const supplier = await prisma.supplier.create({ data: { userId: user.id, organizationId: membership.organizationId, name: marker } });
   supplierId = supplier.id;
 
   const firstImport = await enqueue(user.id, 1);
@@ -114,4 +115,3 @@ try {
   for (const sourceFile of sourceFiles) await unlink(sourceFile).catch(() => undefined);
   await prisma.$disconnect();
 }
-

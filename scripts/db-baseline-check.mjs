@@ -10,12 +10,13 @@ const expectedMigrations = [
   "20260903030000_phase_3_supplier_intelligence",
   "20260904010000_phase_4_amazon_intelligence",
   "20260914010000_baseline_schema_alignment",
+  "20260914030000_saas_tenant_foundation_expand",
 ];
 const expectedTables = [
-  "Alert", "AmazonListing", "Analysis", "Catalog", "CatalogChange", "CatalogImport",
-  "CatalogProduct", "CompetitionSnapshot", "DecisionLog", "Opportunity", "PriceSnapshot",
-  "Product", "ProductMatch", "RankSnapshot", "Supplier", "SupplierProduct",
-  "SupplierProductPrice", "User", "UserSettings",
+  "Alert", "AmazonListing", "Analysis", "AuditLog", "Catalog", "CatalogChange",
+  "CatalogImport", "CatalogProduct", "CompetitionSnapshot", "DecisionLog", "Membership",
+  "Opportunity", "Organization", "PriceSnapshot", "Product", "ProductMatch", "RankSnapshot",
+  "Supplier", "SupplierProduct", "SupplierProductPrice", "User", "UserSettings",
 ];
 
 try {
@@ -65,6 +66,27 @@ try {
   }
   const users = await prisma.user.count();
   if (users < 1) throw new Error("DB_CHECK: seed não criou o usuário demo.");
+  const [organizations, memberships, owners, privateRowsWithoutTenant] = await Promise.all([
+    prisma.organization.count(),
+    prisma.membership.count(),
+    prisma.membership.count({ where: { role: "OWNER" } }),
+    prisma.$queryRaw`
+      SELECT (
+        (SELECT COUNT(*) FROM "Product" WHERE "organizationId" IS NULL) +
+        (SELECT COUNT(*) FROM "Supplier" WHERE "organizationId" IS NULL) +
+        (SELECT COUNT(*) FROM "Analysis" WHERE "organizationId" IS NULL) +
+        (SELECT COUNT(*) FROM "Opportunity" WHERE "organizationId" IS NULL) +
+        (SELECT COUNT(*) FROM "DecisionLog" WHERE "organizationId" IS NULL) +
+        (SELECT COUNT(*) FROM "Alert" WHERE "organizationId" IS NULL)
+      )::int AS count
+    `,
+  ]);
+  if (organizations < 1 || memberships < 1 || owners < 1) {
+    throw new Error("DB_CHECK: seed não criou Organization/Membership OWNER.");
+  }
+  if (privateRowsWithoutTenant[0]?.count !== 0) {
+    throw new Error("DB_CHECK: há registros privados sem organizationId após seed.");
+  }
 
   const diff = spawnSync(
     process.execPath,
@@ -79,7 +101,7 @@ try {
   if (diff.status !== 0) {
     throw new Error(`DB_CHECK: Prisma detectou drift físico.\n${diff.stdout}\n${diff.stderr}`);
   }
-  console.log(`DB baseline: PASS (${target.host}/${target.database}, ${applied.length} migrations, ${actualTables.length} tabelas, seed presente, sem drift).`);
+  console.log(`DB baseline: PASS (${target.host}/${target.database}, ${applied.length} migrations, ${actualTables.length} tabelas, seed/tenant presentes, sem drift).`);
 } finally {
   await prisma.$disconnect();
 }

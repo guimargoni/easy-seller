@@ -116,3 +116,153 @@ Procurement v2 e demais milestones não foram iniciados.
 
 Nenhuma decisão adicional é necessária para considerar o Milestone 0 concluído. O
 início da primeira fatia do Milestone 1 depende de aprovação humana explícita.
+
+---
+
+## Milestone 1 — Slice 1 — Fundação SaaS e isolamento tenant
+
+**Status:** PASS
+
+**Data:** 2026-09-15
+
+**Baseline pré-mudança:** `c320f20cfa00fc26be06a4d63a6fcadc55430da7` (`chore: establish reproducible pre-SaaS baseline`)
+
+Esta fatia foi concluída como uma migração progressiva. Ela adiciona a fundação de
+tenant sem remover o ownership legado, sem alterar IDs existentes e sem iniciar
+funcionalidades do Milestone 2 ou posterior.
+
+### Escopo entregue
+
+- `Organization`, `Membership`, `MembershipRole` e `AuditLog` foram adicionados ao
+  schema Prisma.
+- `organizationId` nullable foi adicionado a `Product`, `Supplier`, `Analysis`,
+  `Opportunity`, `DecisionLog` e `Alert`; `userId` legado permanece preservado onde já
+  existia.
+- O `TenantContext` server-side valida uma membership real antes de liberar rotas
+  privadas e as consultas/mutações aplicáveis passaram a usar `organizationId`.
+- O adaptador local exige simultaneamente ambiente `development` ou `test` e
+  `ALLOW_LOCAL_IDENTITY=true`. `LOCAL_USER_EMAIL` não pode ser habilitado em
+  `production`, mesmo que a flag seja informada.
+- Mutações críticas de produtos, fornecedores, análises, settings e vínculo entre
+  produto/fornecedor geram `AuditLog` tenant-scoped em transação, com remoção de campos
+  sensíveis dos metadados.
+- Catálogos e dados Amazon permanecem associados indiretamente ao tenant por entidades
+  já proprietárias (`Supplier` e `Product`), sem expansão de escopo nesta fatia.
+
+### Migration e backfill
+
+Migration adicionada:
+
+- `20260914030000_saas_tenant_foundation_expand`
+
+A migration é somente expand/backfill: cria tabelas, enum, índices, foreign keys e
+colunas nullable; cria uma organização de migração e uma membership `OWNER` por usuário
+legado; preenche os seis tipos de entidade; e registra auditoria da migração. Não há
+`DROP`, `DELETE`, `TRUNCATE`, alteração de ID ou limpeza de dados. As cláusulas
+`ON DELETE` pertencem apenas às novas constraints e nenhuma exclusão foi executada.
+
+Validações executadas:
+
+| Cenário | Resultado | Evidência |
+|---|---|---|
+| Banco vazio | PASS | 6 migrations aplicadas, seed executado, 22 tabelas e zero drift |
+| Fixture legada com 1 usuário | PASS | 1 organização, 1 OWNER, 6 entidades preenchidas, zero órfãos, IDs e timestamps preservados |
+| Snapshot anterior com 2 usuários | PASS | 2 organizações, 2 OWNERs, 12 entidades preenchidas, zero órfãos/divergências, IDs e timestamps preservados |
+| Banco de desenvolvimento | PASS | 1 usuário, 1 produto e 2 fornecedores preservados; 1 organização/1 membership; zero `organizationId` nulo em produto/fornecedores |
+
+Os bancos temporários `easy_seller_m1_*_test` foram removidos pelo próprio teste; a
+checagem final confirmou que nenhum permaneceu.
+
+### Gates executados no fechamento
+
+| Gate | Resultado |
+|---|---|
+| `npm run lint` | PASS |
+| `npm run typecheck` | PASS |
+| `npm test` | PASS — 30 testes unitários |
+| `npm run build` | PASS |
+| `npm run test:db` | PASS — 6 migrations, 22 tabelas, seed tenant e zero drift |
+| `npm run smoke` | PASS — 17 contratos HTTP |
+| `npm run smoke:phase3` | PASS |
+| `npm run test:worker` | PASS — persistência, processamento e recovery após restart |
+| `npm run test:tenant-migrations` | PASS — banco vazio, fixture de 1 usuário e snapshot de 2 usuários |
+| `npm run test:tenant` | PASS — 11 testes de integração tenant |
+| `npm run test:baseline` | PASS — gate agregado completo |
+| `git diff --check` | PASS |
+
+O build manteve apenas os avisos já conhecidos e não bloqueantes do vinext sobre rotas
+dinâmicas e `glob`. A primeira tentativa do gate após a retomada encontrou o PostgreSQL
+portátil parado; ele foi religado na porta já configurada `55432` e o gate integral foi
+reexecutado com sucesso, sem mudança de migration ou código para contornar o ambiente.
+
+### Evidência de isolamento tenant
+
+Os testes usam nomes intencionalmente semelhantes e dois contextos independentes:
+User A / Organization A e User B / Organization B. Cada cenário abaixo é exercitado nos
+dois sentidos (A contra B e B contra A):
+
+- `Product`: listagem contém somente o registro próprio; leitura e atualização de ID
+  estrangeiro retornam `404`.
+- `Supplier`: listagem contém somente o registro próprio; leitura e atualização de ID
+  estrangeiro retornam `404`.
+- `Analysis`: listagem exclui análises estrangeiras; criação usando produto estrangeiro
+  retorna `404`.
+- `Opportunity`: a recomendação própria aparece apenas no produto próprio e o produto
+  que exporia a oportunidade estrangeira não é listado nem acessível.
+- `Alert`: cada listagem contém somente alertas da organização corrente.
+- `DecisionLog`: ainda não existe rota HTTP aplicável; a persistência foi consultada com
+  o `organizationId` obtido do `TenantContext`, comprovando separação nos dois sentidos.
+- Usuário sem `Membership` recebe `TENANT_MEMBERSHIP_REQUIRED`/`403`.
+- Organização inexistente ou não vinculada ao usuário recebe
+  `TENANT_MEMBERSHIP_REQUIRED`/`403`.
+- Uma mutação crítica confirma que o `AuditLog` recebe `organizationId` e actor corretos
+  e não persiste password, token ou secret nos metadados.
+
+### Compatibilidade preservada
+
+- Todos os campos `userId` legados continuam no schema e nos registros aplicáveis.
+- Os testes de migration conferem explicitamente IDs e timestamps anteriores.
+- As contagens antes/depois do banco de desenvolvimento confirmam que nenhum produto,
+  fornecedor ou usuário foi apagado.
+- Nenhuma migration destrutiva foi criada ou executada.
+- Os gates anteriores de produtos, fornecedores, análises, cálculos, catálogo,
+  importação, Amazon, extensão, dashboard e worker continuam verdes.
+- Nenhuma página nova, billing/plano, Amazon Connect, convite, matriz completa de RBAC,
+  contract migration ou outra feature de Milestone 2+ foi iniciada.
+
+### Arquivos modificados nesta fatia
+
+- Ambiente e scripts raiz: `.env.example`, `.env.test.example`, `package.json`.
+- API: `apps/api/package.json`, `apps/api/src/app.ts`,
+  `apps/api/src/tenant-context.ts`, `apps/api/src/tenant-isolation.test.ts`.
+- Catálogo/worker: `packages/catalog/src/catalog-import.ts`.
+- Banco: `packages/db/prisma/schema.prisma`, `packages/db/prisma/seed.ts`,
+  `packages/db/src/index.ts` e
+  `packages/db/prisma/migrations/20260914030000_saas_tenant_foundation_expand/migration.sql`.
+- Gates: `scripts/db-baseline-check.mjs`, `scripts/phase3-smoke.mjs`,
+  `scripts/run-baseline-gate.mjs`, `scripts/test-environment-guard.mjs`,
+  `scripts/tenant-migration-test.mjs`, `scripts/worker-smoke.mjs`.
+- Documentação: `docs/IMPLEMENTATION_STATUS.md`.
+
+### Riscos restantes e decisões pendentes
+
+- `organizationId` permanece nullable por desenho de expand/contract. Torná-lo
+  obrigatório e remover ou reinterpretar ownership legado exige uma futura contract
+  migration, somente após validação operacional.
+- `UserSettings` continua user-scoped durante a ponte; o comportamento de settings para
+  um usuário com múltiplas organizações precisa ser decidido antes dessa expansão.
+- Catálogo e snapshots Amazon têm isolamento indireto por `Supplier`/`Product`; ownership
+  direto só deve ser considerado se o MASTER SPEC e a próxima fatia o exigirem.
+- Não há rota de `DecisionLog`; nesta fatia só foi possível provar o isolamento da camada
+  de persistência.
+- Autenticação real, convites, transferência de owner e enforcement completo da matriz
+  RBAC não fazem parte desta fatia e continuam pendentes conforme o plano aprovado.
+- O PostgreSQL portátil é uma dependência operacional local; Docker continua não
+  exercitado neste host.
+
+Nenhuma dessas pendências invalida a fatia expand/backfill atual. O avanço para a
+próxima fatia depende de aprovação humana explícita.
+
+## MILESTONE 1 — SLICE 1 STATUS
+
+PASS

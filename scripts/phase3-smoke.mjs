@@ -4,7 +4,7 @@ import { ensureLocalUser, prisma } from "@easy-seller/db";
 import { unlink } from "node:fs/promises";
 import { assertSafeTestEnvironment } from "./test-environment-guard.mjs";
 
-assertSafeTestEnvironment();
+assertSafeTestEnvironment({ requireApi: true });
 
 const app = await buildApp();
 const marker = `phase3-smoke-${Date.now()}`;
@@ -25,7 +25,8 @@ async function createAndProcess(name, products) {
 
 try {
   const user = await ensureLocalUser();
-  const supplier = await prisma.supplier.create({ data: { userId: user.id, name: marker } });
+  const membership = await prisma.membership.findFirstOrThrow({ where: { userId: user.id } });
+  const supplier = await prisma.supplier.create({ data: { userId: user.id, organizationId: membership.organizationId, name: marker } });
   supplierId = supplier.id;
   const first = await createAndProcess(`${marker}-v1`, [
     { supplierSku: "SMOKE-A", name: "Produto Smoke A", unitPrice: 10, unitsPerBox: 6, minimumUnits: 6, availability: "IN_STOCK" },

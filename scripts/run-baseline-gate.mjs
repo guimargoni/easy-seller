@@ -42,6 +42,8 @@ runNpm("run", "db:generate");
 runNpm("run", "db:reset");
 runNpm("run", "db:seed");
 runNpm("run", "test:db");
+runNpm("run", "test:tenant-migrations");
+runNpm("run", "test:tenant");
 
 const apiUrl = process.env.API_URL ?? "http://localhost:3334";
 const apiPort = new URL(apiUrl).port || "3334";

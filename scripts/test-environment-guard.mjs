@@ -18,6 +18,9 @@ export function assertSafeTestEnvironment({ requireApi = false } = {}) {
     throw new Error(`TEST_GUARD: o database '${database}' não está claramente identificado como teste.`);
   }
   if (requireApi) {
+    if (process.env.ALLOW_LOCAL_IDENTITY !== "true") {
+      throw new Error("TEST_GUARD: defina ALLOW_LOCAL_IDENTITY=true explicitamente para a API local.");
+    }
     const apiUrl = new URL(process.env.API_URL ?? "http://localhost:3334");
     if (!LOCAL_HOSTS.has(apiUrl.hostname)) {
       throw new Error("TEST_GUARD: smoke HTTP só pode apontar para API local.");
@@ -29,4 +32,3 @@ export function assertSafeTestEnvironment({ requireApi = false } = {}) {
   }
   return { database, host: databaseUrl.hostname };
 }
-
