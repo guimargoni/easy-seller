@@ -6,8 +6,8 @@ import {
   assertLocalIdentityAllowed,
   resolveTenantContextForUser,
   sanitizeAuditMetadata,
-  type TenantContextResolver,
 } from "./tenant-context.js";
+import type { IdentityResolver } from "./identity-session.js";
 
 const marker = "tenant-slice1";
 const ids = {
@@ -33,11 +33,11 @@ function assertTestDatabase() {
     throw new Error("Tenant integration tests require a database clearly named as test.");
 }
 
-const resolver: TenantContextResolver = async (request) => {
+const resolver: IdentityResolver = async (request) => {
   const email = request.headers["x-test-user-email"];
   if (typeof email !== "string") throw new Error("TEST_IDENTITY_REQUIRED");
   const user = await prisma.user.findUniqueOrThrow({ where: { email } });
-  return resolveTenantContextForUser(user.id);
+  return { userId: user.id, source: "TEST_FIXTURE" };
 };
 
 const productPayload = (name: string) => ({
@@ -108,7 +108,7 @@ describe("tenant isolation", () => {
       { id: ids.decisionA, userId: ids.userA, organizationId: ids.organizationA, productId: ids.productA, decision: "TEST", context: {} },
       { id: ids.decisionB, userId: ids.userB, organizationId: ids.organizationB, productId: ids.productB, decision: "TEST", context: {} },
     ] });
-    app = await buildApp({ tenantContextResolver: resolver });
+    app = await buildApp({ identityResolver: resolver });
   });
 
   afterAll(async () => {

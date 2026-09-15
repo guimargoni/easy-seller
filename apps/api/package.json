@@ -7,7 +7,8 @@
     "dev": "tsx watch src/server.ts",
     "build": "tsc -p tsconfig.json",
     "start": "node dist/server.js",
-    "test:tenant": "vitest run src/tenant-isolation.test.ts",
+    "test:tenant": "vitest run src/tenant-isolation.test.ts src/auth-rbac.test.ts",
+    "test:auth": "vitest run src/auth-rbac.test.ts",
     "typecheck": "tsc --noEmit -p tsconfig.json",
     "lint": "oxlint src"
   },

@@ -266,3 +266,154 @@ próxima fatia depende de aprovação humana explícita.
 ## MILESTONE 1 — SLICE 1 STATUS
 
 PASS
+
+---
+
+## Milestone 1 — Slice 2 — Identity, Session e RBAC server-side
+
+**Status:** PASS
+
+**Data:** 2026-09-15
+
+**Checkpoint pré-mudança:** `6d3d9f4` (`feat: establish multi-tenant SaaS foundation`)
+
+Esta fatia completa a cadeia server-side `IdentityResolver → SessionContext →
+Membership → TenantContext → Authorization/RBAC → rota de domínio`. A identidade é
+obtida por um adaptador vendor-neutral; nenhum provedor externo foi escolhido ou
+acoplado nesta etapa.
+
+### Arquitetura de identidade e sessão
+
+- `IdentityResolver` traduz a identidade autenticada do adaptador para um `userId`
+  interno. Payloads de domínio não participam dessa resolução.
+- `SessionContext` carrega o usuário e somente memberships ativas. A organização ativa
+  é selecionada por `x-organization-id` e aceita apenas se estiver entre as memberships
+  autorizadas; na ausência do header, a primeira membership ativa é usada.
+- A role da membership selecionada gera a lista de capabilities no servidor. Cada rota
+  privada precisa constar no mapa central; rotas privadas sem política recebem `403`
+  por deny-by-default.
+- O adaptador local continua condicionado a ambiente `development` ou `test` e a
+  `ALLOW_LOCAL_IDENTITY=true`. Em `production`, ele falha fechado mesmo com a flag.
+
+### Endpoints adicionados
+
+- `GET /me`: usuário seguro, organizações autorizadas, organização/role corrente e
+  capabilities efetivas.
+- `GET /members`: memberships da organização corrente com campos de perfil seguros.
+- `PATCH /members/:id`: alteração de role tenant-scoped, com proteção especial de OWNER
+  e auditoria atômica.
+- `GET /audit-logs`: até 100 eventos recentes, sempre filtrados pela organização ativa.
+
+### Matriz de capabilities
+
+| Role | Permissões efetivas nesta fatia |
+|---|---|
+| `OWNER` | Todas, inclusive administrar OWNER e ler auditoria |
+| `ADMIN` | Todas, exceto promover/rebaixar OWNER |
+| `OPERATIONS` | Leituras operacionais; escrita de produtos, fornecedores, catálogos, análises e Amazon Intelligence |
+| `FINANCE` | Leituras, cálculos e escrita de análises |
+| `ADS_MANAGER` | Sessão, produtos, análises, cálculos, pesquisa, dashboard, alertas e Amazon Intelligence em leitura |
+| `ANALYST` | Leituras gerais e execução de cálculos |
+| `VIEWER` | Leituras gerais, sem cálculos ou mutações |
+
+As capabilities são centralizadas em `authorization.ts` e associadas explicitamente a
+todas as rotas privadas existentes. Nenhuma funcionalidade de Ads foi criada para
+preencher artificialmente o papel `ADS_MANAGER`.
+
+### Migration e proteção de OWNER
+
+A migration expand-only `20260915010000_identity_session_rbac` adiciona
+`Membership.isActive` obrigatório com default `true`. Não há `DROP`, remoção de dados,
+mudança de IDs ou contract migration.
+
+A administração mínima desta fatia altera somente roles. `ADMIN` não pode promover ou
+rebaixar OWNER. A degradação do último OWNER retorna `409
+ORGANIZATION_OWNER_REQUIRED`; a contagem, a atualização e a auditoria ocorrem em
+transação `Serializable`, preservando o invariante também sob concorrência. Não foi
+adicionada rota de remoção/desativação de membership nesta fatia.
+
+### Evidências de segurança e isolamento
+
+Os testes de integração usam rotas reais, duas organizações e as sete roles:
+
+- ausência de identidade retorna `401 AUTHENTICATION_REQUIRED`;
+- identidade sem membership ativa, organização inexistente ou não autorizada retorna
+  `403 TENANT_MEMBERSHIP_REQUIRED`;
+- rota privada sem política retorna `403 AUTHORIZATION_POLICY_REQUIRED`;
+- capability insuficiente retorna `403 CAPABILITY_REQUIRED`;
+- recurso pertencente a outro tenant retorna `404`, sem revelar sua existência;
+- `VIEWER` pode ler e não pode mutar; OWNER é autorizado; ADMIN, OPERATIONS, FINANCE,
+  ADS_MANAGER e ANALYST são exercitados conforme a matriz;
+- `userId` e `organizationId` forjados no payload não alteram o actor nem o ownership
+  estabelecido pela sessão server-side;
+- `LOCAL_USER_EMAIL` não pode fornecer identidade em production;
+- `/me`, `/members` e `/audit-logs` não expõem tokens, secrets, passwords, hashes ou
+  cookies;
+- mudanças de role geram `MEMBERSHIP.ROLE_CHANGED` com actor e metadata sanitizada na
+  mesma transação; a leitura de auditoria não atravessa organizações.
+
+### Gates executados no fechamento
+
+| Gate | Resultado |
+|---|---|
+| `npm run lint` | PASS |
+| `npm run typecheck` | PASS |
+| `npm test` | PASS — 30 testes unitários |
+| `npm run build` | PASS |
+| `npm run test:db` | PASS — 7 migrations, 22 tabelas, seed tenant e zero drift |
+| `npm run smoke` | PASS — 17 contratos HTTP reais |
+| `npm run smoke:phase3` | PASS |
+| `npm run test:worker` | PASS — persistência, processamento e recovery após restart |
+| `npm run test:tenant-migrations` | PASS — fixture de 1 usuário e snapshot de 2 usuários |
+| `npm run test:tenant` | PASS — 26 testes (11 tenant existentes + 15 Identity/Session/RBAC) |
+| `npm run test:baseline` | PASS — gate agregado completo |
+| `git diff --check` | PASS |
+
+O `.env.test` foi carregado explicitamente nos processos standalone e pelo mecanismo
+`--env-file-if-exists=.env.test` no baseline. Todos os testes destrutivos usaram o
+PostgreSQL portátil exclusivo de teste em `localhost:55432`; nenhum banco pessoal ou de
+desenvolvimento foi usado.
+
+### Compatibilidade preservada
+
+- Os 11 testes tenant anteriores continuam presentes e verdes; nenhum teste ou guard
+  foi removido ou enfraquecido.
+- Os contratos existentes de produtos, fornecedores, análises, cálculos, catálogo,
+  Amazon Intelligence, extensão, dashboard e worker continuam verdes.
+- `userId` legado e `organizationId` nullable permanecem como ponte da migration
+  expand/contract; esta fatia não executa contrato destrutivo.
+- `TEST_GUARD` e as restrições de identidade local permanecem intactos.
+- Não foram iniciados Slice 3, billing, convites, Amazon Connect, telas novas ou
+  qualquer escopo do Milestone 2.
+
+### Arquivos modificados nesta fatia
+
+- API: `apps/api/package.json`, `apps/api/src/app.ts`,
+  `apps/api/src/authorization.ts`, `apps/api/src/identity-session.ts`,
+  `apps/api/src/auth-rbac.test.ts`, `apps/api/src/tenant-context.ts` e
+  `apps/api/src/tenant-isolation.test.ts`.
+- Banco: `packages/db/prisma/schema.prisma` e
+  `packages/db/prisma/migrations/20260915010000_identity_session_rbac/migration.sql`.
+- Gate estrutural: `scripts/db-baseline-check.mjs`.
+- Documentação: `docs/IMPLEMENTATION_STATUS.md`.
+
+### Riscos restantes e decisões adiadas
+
+- O provedor real de autenticação/sessão continua deliberadamente indefinido atrás do
+  `IdentityResolver`; integração, cookies/tokens, login e logout pertencem a trabalho
+  posterior aprovado separadamente.
+- A seleção da organização é por request e não é persistida; clientes multi-org devem
+  enviar `x-organization-id` para seleção explícita.
+- Convites, criação, remoção/desativação, transferência formal de ownership e permissões
+  customizadas por usuário não fazem parte desta administração mínima.
+- `UserSettings` continua user-scoped e `organizationId` continua nullable durante a
+  ponte de compatibilidade.
+- O PostgreSQL portátil segue como dependência operacional local neste host; Docker não
+  foi introduzido nem necessário para esta validação.
+
+Nenhum desses riscos invalida os controles server-side desta fatia. O avanço para a
+Slice 3 ou para o Milestone 2 depende de aprovação humana explícita.
+
+## MILESTONE 1 — SLICE 2 STATUS
+
+PASS

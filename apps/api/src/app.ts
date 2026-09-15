@@ -19,12 +19,21 @@ import {
 } from "@easy-seller/calculations";
 import { prisma } from "@easy-seller/db";
 import {
-  localTenantContextResolver,
   recordAudit,
   TenantContextError,
   type TenantContext,
-  type TenantContextResolver,
 } from "./tenant-context.js";
+import {
+  localIdentityResolver,
+  requestedOrganization,
+  resolveSessionContext,
+  type IdentityResolver,
+} from "./identity-session.js";
+import {
+  capabilityForRoute,
+  capabilitiesForRole,
+  hasCapability,
+} from "./authorization.js";
 import {
   AmazonPageObservationAdapter,
   AmazonSpApiAdapter,
@@ -516,19 +525,28 @@ async function getRealAvailableCapital(context: TenantContext) {
   return { settings, availableCents: Math.max(0, settings.capitalTotalCents - settings.capitalReserveCents - committed) };
 }
 
-export async function buildApp(options: { tenantContextResolver?: TenantContextResolver } = {}) {
+export async function buildApp(options: { identityResolver?: IdentityResolver } = {}) {
   const app = Fastify({ logger: true });
   await app.register(cors, {
     origin: process.env.WEB_ORIGIN ?? "http://localhost:3000",
     methods: ["GET", "HEAD", "POST", "PUT", "PATCH", "DELETE", "OPTIONS"],
-    allowedHeaders: ["Content-Type"],
+    allowedHeaders: ["Content-Type", "X-Organization-Id"],
     credentials: false,
   });
   await app.register(multipart, { limits: { fileSize: catalogMaxUploadBytes, files: 1 } });
-  const resolveTenantContext = options.tenantContextResolver ?? localTenantContextResolver;
+  const resolveIdentity = options.identityResolver ?? localIdentityResolver;
   app.addHook("preHandler", async (request) => {
-    if (request.routeOptions.url === "/health") return;
-    request.tenant = await resolveTenantContext(request);
+    if (request.method === "OPTIONS" || request.routeOptions.url === "/health") return;
+    const identity = await resolveIdentity(request);
+    if (!identity) throw new TenantContextError("AUTHENTICATION_REQUIRED", 401);
+    request.session = await resolveSessionContext(identity, requestedOrganization(request));
+    request.tenant = request.session.tenant;
+    request.capabilities = capabilitiesForRole(request.tenant.role);
+    const required = capabilityForRoute(request.method, request.routeOptions.url ?? "");
+    if (!required) throw new TenantContextError("AUTHORIZATION_POLICY_REQUIRED", 403);
+    if (!hasCapability(request.capabilities, required)) {
+      throw new TenantContextError("CAPABILITY_REQUIRED", 403);
+    }
   });
   app.get("/health", async (_req, reply) => {
     try {
@@ -538,6 +556,73 @@ export async function buildApp(options: { tenantContextResolver?: TenantContextR
       return reply.code(503).send({ status: "error", database: "disconnected" });
     }
   });
+  app.get("/me", async (req) => ({
+    user: req.session.user,
+    identity: { source: req.session.identity.source },
+    organizations: req.session.memberships.map((membership) => ({
+      id: membership.organizationId,
+      name: membership.organizationName,
+      role: membership.role,
+    })),
+    currentOrganization: {
+      id: req.tenant.organizationId,
+      role: req.tenant.role,
+    },
+    capabilities: req.capabilities,
+  }));
+  app.get("/members", async (req) => prisma.membership.findMany({
+    where: { organizationId: req.tenant.organizationId },
+    select: {
+      id: true,
+      role: true,
+      isActive: true,
+      createdAt: true,
+      updatedAt: true,
+      user: { select: { id: true, email: true, name: true } },
+    },
+    orderBy: { createdAt: "asc" },
+  }));
+  app.patch("/members/:id", async (req, reply) => {
+    const id = (req.params as { id: string }).id;
+    const parsed = z.object({
+      role: z.enum(["OWNER", "ADMIN", "FINANCE", "OPERATIONS", "ADS_MANAGER", "ANALYST", "VIEWER"]),
+    }).strict().safeParse(req.body);
+    if (!parsed.success) return reply.code(400).send({ error: "INVALID_MEMBERSHIP_UPDATE", issues: parsed.error.issues });
+    const membership = await prisma.$transaction(async (tx) => {
+      const target = await tx.membership.findFirst({
+        where: { id, organizationId: req.tenant.organizationId, isActive: true },
+      });
+      if (!target) throw new TenantContextError("NOT_FOUND", 404);
+      const changesOwnership = target.role === "OWNER" || parsed.data.role === "OWNER";
+      if (changesOwnership && !hasCapability(req.capabilities, "members.manage_owner")) {
+        throw new TenantContextError("OWNER_PROTECTED", 403);
+      }
+      if (target.role === "OWNER" && parsed.data.role !== "OWNER") {
+        const ownerCount = await tx.membership.count({
+          where: { organizationId: req.tenant.organizationId, role: "OWNER", isActive: true },
+        });
+        if (ownerCount <= 1) throw new TenantContextError("ORGANIZATION_OWNER_REQUIRED", 409);
+      }
+      const updated = await tx.membership.update({ where: { id }, data: { role: parsed.data.role } });
+      await recordAudit(tx, req.tenant, {
+        action: "MEMBERSHIP.ROLE_CHANGED",
+        entityType: "Membership",
+        entityId: id,
+        metadata: { previousRole: target.role, nextRole: parsed.data.role, targetUserId: target.userId },
+      });
+      return updated;
+    }, { isolationLevel: "Serializable" });
+    return { id: membership.id, role: membership.role, isActive: membership.isActive };
+  });
+  app.get("/audit-logs", async (req) => prisma.auditLog.findMany({
+    where: { organizationId: req.tenant.organizationId },
+    select: {
+      id: true, actorUserId: true, action: true, entityType: true,
+      entityId: true, metadata: true, createdAt: true,
+    },
+    orderBy: { createdAt: "desc" },
+    take: 100,
+  }));
   app.get("/settings", async (req) =>
     serializeSettings(await prisma.userSettings.findUniqueOrThrow({ where: { userId: req.tenant.userId } })),
   );

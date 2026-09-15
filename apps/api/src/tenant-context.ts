@@ -1,6 +1,5 @@
-import type { FastifyRequest } from "fastify";
 import type { MembershipRole, Prisma } from "@prisma/client";
-import { LOCAL_USER_EMAIL, prisma } from "@easy-seller/db";
+import { prisma } from "@easy-seller/db";
 
 export interface TenantContext {
   userId: string;
@@ -8,8 +7,6 @@ export interface TenantContext {
   membershipId: string;
   role: MembershipRole;
 }
-
-export type TenantContextResolver = (request: FastifyRequest) => Promise<TenantContext>;
 
 export class TenantContextError extends Error {
   constructor(
@@ -37,7 +34,7 @@ export async function resolveTenantContextForUser(
   organizationId?: string,
 ): Promise<TenantContext> {
   const membership = await prisma.membership.findFirst({
-    where: { userId, ...(organizationId ? { organizationId } : {}) },
+    where: { userId, isActive: true, ...(organizationId ? { organizationId } : {}) },
     orderBy: { createdAt: "asc" },
   });
   if (!membership) throw new TenantContextError("TENANT_MEMBERSHIP_REQUIRED", 403);
@@ -48,54 +45,6 @@ export async function resolveTenantContextForUser(
     role: membership.role,
   };
 }
-
-async function ensureLocalTenantContext(): Promise<TenantContext> {
-  const user = await prisma.user.upsert({
-    where: { email: LOCAL_USER_EMAIL },
-    update: {},
-    create: { email: LOCAL_USER_EMAIL, name: "Usuário local", settings: { create: {} } },
-    include: { settings: true },
-  });
-  if (!user.settings) await prisma.userSettings.create({ data: { userId: user.id } });
-
-  const existing = await prisma.membership.findFirst({
-    where: { userId: user.id },
-    orderBy: { createdAt: "asc" },
-  });
-  if (existing) return resolveTenantContextForUser(user.id, existing.organizationId);
-
-  return prisma.$transaction(async (tx) => {
-    const organization = await tx.organization.create({
-      data: {
-        name: user.name ? `${user.name} — Organização` : "Organização local",
-        memberships: { create: { userId: user.id, role: "OWNER" } },
-      },
-      include: { memberships: true },
-    });
-    const membership = organization.memberships[0];
-    await tx.auditLog.create({
-      data: {
-        organizationId: organization.id,
-        actorUserId: user.id,
-        action: "LOCAL.ORGANIZATION_BOOTSTRAPPED",
-        entityType: "Organization",
-        entityId: organization.id,
-        metadata: { source: "explicit_local_identity_adapter" },
-      },
-    });
-    return {
-      userId: user.id,
-      organizationId: organization.id,
-      membershipId: membership.id,
-      role: membership.role,
-    };
-  });
-}
-
-export const localTenantContextResolver: TenantContextResolver = async () => {
-  assertLocalIdentityAllowed();
-  return ensureLocalTenantContext();
-};
 
 const sensitiveMetadataKey = /password|token|secret|authorization|cookie|document|payload/i;
 

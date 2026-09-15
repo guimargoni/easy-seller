@@ -11,6 +11,7 @@ const expectedMigrations = [
   "20260904010000_phase_4_amazon_intelligence",
   "20260914010000_baseline_schema_alignment",
   "20260914030000_saas_tenant_foundation_expand",
+  "20260915010000_identity_session_rbac",
 ];
 const expectedTables = [
   "Alert", "AmazonListing", "Analysis", "AuditLog", "Catalog", "CatalogChange",
@@ -52,6 +53,7 @@ try {
       AND (
         (table_name = 'CatalogProduct' AND column_name = 'fieldConfidence') OR
         (table_name = 'CatalogImport' AND column_name = 'updatedAt') OR
+        (table_name = 'Membership' AND column_name = 'isActive') OR
         (table_name IN ('PriceSnapshot', 'RankSnapshot', 'CompetitionSnapshot')
           AND column_name IN ('origin', 'confidence', 'source', 'amazonOrigin', 'amazonConfidence', 'amazonSource'))
       )
@@ -60,7 +62,13 @@ try {
   if (!confidence || confidence.is_nullable !== "YES") {
     throw new Error("DB_CHECK: CatalogProduct.fieldConfidence não corresponde ao Json? do Prisma.");
   }
-  const residualDefaults = columns.filter((row) => row.column_default !== null);
+  const membershipIsActive = columns.find((row) => row.table_name === "Membership" && row.column_name === "isActive");
+  if (!membershipIsActive || membershipIsActive.is_nullable !== "NO" || membershipIsActive.column_default !== "true") {
+    throw new Error("DB_CHECK: Membership.isActive não corresponde ao Boolean obrigatório com default true.");
+  }
+  const residualDefaults = columns.filter((row) =>
+    !(row.table_name === "Membership" && row.column_name === "isActive") && row.column_default !== null,
+  );
   if (residualDefaults.length) {
     throw new Error(`DB_CHECK: defaults residuais: ${residualDefaults.map((row) => `${row.table_name}.${row.column_name}`).join(", ")}`);
   }
